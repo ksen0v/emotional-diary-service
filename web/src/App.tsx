@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { useMe } from './lib/auth'
 import { Login } from './pages/Login'
 import { SettingsPage } from './pages/SettingsPage'
+import { TradesPage } from './pages/TradesPage'
 import { Shell } from './ui/Shell'
 import { Stub } from './ui/Stub'
 
@@ -43,11 +44,7 @@ export function App() {
         <Route
           path="/trades"
           element={
-            <Stub
-              title="Сделки"
-              step={2}
-              what="Лента сделок с разметкой нарушений и кривой дня."
-            />
+<TradesPage />
           }
         />
         <Route
@@ -68,7 +65,7 @@ export function App() {
           path="/rules"
           element={<Stub title="Правила" step={8} what="Конструктор правил и триггеры." />}
         />
-        <Route path="*" element={<Navigate to="/settings" replace />} />
+        <Route path="*" element={<Navigate to="/trades" replace />} />
       </Routes>
     </Shell>
   )

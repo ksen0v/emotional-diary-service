@@ -16,8 +16,12 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import consumers
+from eds.app.api import router as sync_router
 from eds.contracts import events as ev
 from eds.modules.identity.api import router as identity_router
+from eds.modules.source.api import router as source_router
+from eds.modules.trades.api import router as trades_router
 from eds.platform import bus, db, errors, log
 from eds.platform.config import settings
 from eds.version import STEP, STEP_NAME, VERSION
@@ -40,16 +44,23 @@ async def lifespan(app: FastAPI):
     log.setup(settings().log_level)
     logger.info("запуск api, шаг %s — %s, версия %s", STEP, STEP_NAME, VERSION)
 
-    consumer = bus.Consumer("demo", _demo_handler)
-    task = asyncio.create_task(consumer.run(), name="consumer-demo")
-    app.state.consumer = consumer
+    # Демо-консьюмер оставлен: по его курсору на странице состояния видно,
+    # что шина живая. Рабочие консьюмеры — рядом, из оркестрации.
+    running = [bus.Consumer("demo", _demo_handler), *consumers.all_consumers()]
+    tasks = [
+        asyncio.create_task(c.run(), name=f"consumer-{c.name}") for c in running
+    ]
+    app.state.consumers = running
     try:
         yield
     finally:
-        consumer.stop()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for c in running:
+            c.stop()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await db.dispose()
         logger.info("api остановлен")
 
@@ -57,6 +68,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Emotional Diary Service", version=VERSION, lifespan=lifespan)
 errors.install(app)
 app.include_router(identity_router)
+app.include_router(source_router)
+app.include_router(trades_router)
+app.include_router(sync_router)
 
 
 @app.get("/api/v1/health")

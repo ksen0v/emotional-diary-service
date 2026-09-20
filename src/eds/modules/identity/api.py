@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.modules.identity import repo, service
 from eds.modules.identity.models import Session, Settings, User
-from eds.platform import db, security
-from eds.platform.errors import AppError, csrf_invalid, unauthenticated
+from eds.platform import auth, db, security
+from eds.platform.errors import AppError, unauthenticated
 
 router = APIRouter(prefix="/api/v1", tags=["identity"])
 
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# csrf-проверка общая для всего API и живёт в платформе
+check_csrf = auth.check_csrf
 
 
 # --- зависимости ---
@@ -23,19 +24,6 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
-
-
-async def check_csrf(request: Request) -> None:
-    """Double submit: значение куки должно совпасть с заголовком.
-
-    GET от проверки свободны сознательно — ни один GET в этом API ничего не меняет.
-    """
-    if request.method in SAFE_METHODS:
-        return
-    cookie = request.cookies.get(security.CSRF_COOKIE)
-    header = request.headers.get(security.CSRF_HEADER)
-    if not cookie or not header or cookie != header:
-        raise csrf_invalid()
 
 
 async def current(
@@ -47,6 +35,34 @@ async def current(
     identity = await service.identity_by_token(s, token)
     await s.commit()
     return identity
+
+
+# --- резолверы для платформы ---
+# Так другие модули получают пользователя и его настройки, не импортируя identity.
+
+
+async def _resolve_user(s: AsyncSession, token: str) -> auth.CurrentUser:
+    identity = await service.identity_by_token(s, token)
+    return auth.CurrentUser(
+        user_id=identity.user.id,
+        email=identity.user.email,
+        session_id=identity.session.id,
+    )
+
+
+async def _resolve_prefs(s: AsyncSession, user_id: uuid.UUID) -> auth.UserPrefs:
+    row = await repo.settings_of(s, user_id)
+    if row is None:
+        raise AppError("not_found", "Настройки не найдены.", status.HTTP_404_NOT_FOUND)
+    return auth.UserPrefs(
+        timezone=row.timezone,
+        day_cutoff=row.day_cutoff,
+        significance_pct=row.significance_pct,
+        shadow_mode=row.shadow_mode,
+    )
+
+
+auth.register(_resolve_user, _resolve_prefs)
 
 
 # --- формы запросов и ответов ---

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ApiError, api } from '../lib/api'
 import type { Me, SessionRow, Settings, SettingsPatched } from '../lib/types'
+import { SourceCard } from '../ui/SourceCard'
 
 const TIMEZONES = [
   'Europe/Moscow',
@@ -90,6 +91,8 @@ export function SettingsPage({ me }: { me: Me }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 680 }}>
+      <SourceCard />
+
       <div className="card" style={{ padding: '18px 20px' }}>
         <div className="klabel" style={{ marginBottom: 16 }}>
           Торговый день

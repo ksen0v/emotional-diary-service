@@ -49,15 +49,39 @@ async def app_client(test_db_url: str, monkeypatch) -> AsyncIterator[httpx.Async
     settings.cache_clear()
 
 
+# Между схемами нет внешних ключей — это следствие границ модулей: модуль
+# владеет своими таблицами, и чужая схема не может держать его за руку.
+# Цена видна здесь: удаление пользователя приходится расписывать по схемам,
+# и в сервисе «удалить аккаунт» тоже будет операцией уровня оркестрации.
+WIPE = (
+    "DELETE FROM trades.trade_tags WHERE trade_id IN ("
+    " SELECT id FROM trades.trades WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM trades.trades WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM source.fake_feed WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM identity.users WHERE email LIKE '%@edstest.net'",
+)
+
+WITH_TEST_USERS = (
+    "WITH test_users AS ("
+    " SELECT id FROM identity.users WHERE email LIKE '%@edstest.net') "
+)
+
+
 @pytest.fixture
 async def clean_users(factory):
-    """Удаляем тестовых пользователей до и после: почта уникальна."""
+    """Чистим тестовых пользователей и всё, что к ним привязано, до и после."""
 
     async def wipe() -> None:
         async with factory() as s:
-            await s.execute(
-                text("DELETE FROM identity.users WHERE email LIKE '%@edstest.net'")
-            )
+            for statement in WIPE:
+                sql = statement
+                if "test_users" in statement:
+                    sql = WITH_TEST_USERS + statement
+                await s.execute(text(sql))
             await s.commit()
 
     await wipe()

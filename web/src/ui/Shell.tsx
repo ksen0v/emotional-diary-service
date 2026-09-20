@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useSetMe } from '../lib/auth'
 import type { Me } from '../lib/types'
+import { useConnections } from './SourceCard'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
@@ -16,6 +17,8 @@ const SECTIONS = [
 export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   const setMe = useSetMe()
   const navigate = useNavigate()
+  const connections = useConnections()
+  const active = connections.data?.connections.find((c) => c.is_active)
 
   async function logout() {
     await api.post('/auth/logout')
@@ -71,8 +74,13 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           }}
         >
           <span style={{ fontSize: 13, color: 'var(--dim)' }}>
-            Источник не подключён
+            {active ? `Источник: ${active.provider}` : 'Источник не подключён'}
           </span>
+          {active?.accounts[0] && (
+            <span style={{ fontSize: 13, color: 'var(--faint)' }}>
+              {active.accounts[0].name}
+            </span>
+          )}
           <div style={{ flexGrow: 1 }} />
           <span style={{ fontSize: 13, color: 'var(--dim)' }}>{me.user.email}</span>
           <button onClick={logout} style={{ fontSize: 12, padding: '6px 12px' }}>
