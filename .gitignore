@@ -1,0 +1,32 @@
+# секреты — никогда в репозиторий
+.env
+*.pem
+*.key
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# node / фронт
+node_modules/
+web/dist/
+.vite/
+
+# базы и логи
+*.sqlite3
+*.log
+pgdata/
+
+# редакторы и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

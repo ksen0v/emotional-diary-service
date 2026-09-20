@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDS — состояние</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif&display=swap">
+<style>
+  :root{
+    --bg:#141413; --panel:#1C1C1A; --line:#2B2B27; --fg:#EDEBE6;
+    --dim:#A9A69E; --faint:#85837C; --ok:#6FA97F; --warn:#C9A76A; --bad:#E4897A;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:840px;margin:0 auto;padding:40px 16px 64px}
+  h1{font-family:'Instrument Serif',Georgia,serif;font-weight:400;font-size:30px;margin:0 0 4px}
+  .sub{color:var(--faint);font-size:13px;margin-bottom:28px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .klabel{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
+  .row{display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid #212120}
+  .row:last-child{border-bottom:none}
+  .row .k{color:var(--dim);min-width:190px}
+  .row .v{font-family:'IBM Plex Mono',monospace;color:var(--fg)}
+  .mono{font-family:'IBM Plex Mono',monospace}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .pills{display:flex;flex-wrap:wrap;gap:6px}
+  .pill{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 9px;border-radius:12px;border:1px solid var(--line);color:var(--dim)}
+  .pill.on{border-color:#2F4A38;color:var(--ok)}
+  .pill.off{border-color:#4A2A26;color:var(--bad)}
+  button{font-family:inherit;font-size:13px;padding:8px 14px;border-radius:7px;border:1px solid #33332E;background:transparent;color:var(--dim);cursor:pointer}
+  button:hover{border-color:#4A4A42;color:var(--fg)}
+  .note{color:var(--faint);font-size:12px;margin-top:10px;line-height:1.6}
+  .err{color:var(--bad);font-family:'IBM Plex Mono',monospace;font-size:12px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Emotional Diary Service</h1>
+  <div class="sub" id="head">загрузка…</div>
+
+  <div class="card">
+    <div class="klabel">Сервис</div>
+    <div class="row"><span class="k">Версия</span><span class="v" id="version">—</span></div>
+    <div class="row"><span class="k">Шаг плана</span><span class="v" id="step">—</span></div>
+    <div class="row"><span class="k">Окружение</span><span class="v" id="env">—</span></div>
+    <div class="row"><span class="k">Время сервера</span><span class="v" id="time">—</span></div>
+    <div class="row"><span class="k">Ключ шифрования</span><span class="v" id="secret">—</span></div>
+  </div>
+
+  <div class="card">
+    <div class="klabel">База данных</div>
+    <div class="row"><span class="k">Соединение</span><span class="v" id="dbconn">—</span></div>
+    <div class="row"><span class="k">Версия миграции</span><span class="v" id="dbrev">—</span></div>
+    <div class="row" style="display:block">
+      <div class="k" style="margin-bottom:8px">Схемы модулей</div>
+      <div class="pills" id="schemas"></div>
+    </div>
+    <div class="err" id="dberr"></div>
+  </div>
+
+  <div class="card">
+    <div class="klabel">Событийная шина</div>
+    <div class="row"><span class="k">Событий в outbox</span><span class="v" id="published">—</span></div>
+    <div class="row"><span class="k">Обработано консьюмером demo</span><span class="v" id="handled">—</span></div>
+    <div class="row"><span class="k">Последний обработанный id</span><span class="v" id="cursor">—</span></div>
+    <div class="row"><span class="k">Не обработано</span><span class="v" id="pending">—</span></div>
+    <div class="row"><span class="k">Доставлено за этот запуск</span><span class="v" id="delivered">—</span></div>
+    <div class="row"><span class="k">Мёртвые письма</span><span class="v" id="dead">—</span></div>
+    <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+      <button id="send">Отправить тестовое событие</button>
+      <span class="note" id="sent" style="margin:0"></span>
+    </div>
+    <div class="note">Проверка шага 0: нажми кнопку — счётчик в outbox вырастет, а через секунду
+      за ним подтянется курсор консьюмера. Значит событие дошло от продюсера к консьюмеру.</div>
+    <div class="err" id="buserr"></div>
+  </div>
+
+  <div class="note">Страница обновляется каждые две секунды. Документация API — <a href="/docs" style="color:#7FA0C9">/docs</a></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function mark(el, good, text) {
+  el.textContent = text;
+  el.className = 'v ' + (good ? 'ok' : 'bad');
+}
+
+async function refresh() {
+  let data;
+  try {
+    const res = await fetch('/api/v1/health', {cache: 'no-store'});
+    data = await res.json();
+  } catch (e) {
+    $('head').textContent = 'сервис не отвечает: ' + e;
+    return;
+  }
+
+  $('head').textContent = data.ok
+    ? 'всё на месте — база подключена, миграции применены'
+    : 'сервис запущен, но что-то не готово — смотри ниже';
+  $('head').className = 'sub ' + (data.ok ? 'ok' : 'warn');
+
+  $('version').textContent = data.version;
+  $('step').textContent = data.step.number + ' — ' + data.step.name;
+  $('env').textContent = data.env;
+  $('time').textContent = data.server_time;
+  mark($('secret'), data.secret_key_set, data.secret_key_set ? 'задан' : 'не задан (нужен с шага 4)');
+  if (!data.secret_key_set) $('secret').className = 'v warn';
+
+  mark($('dbconn'), data.db.connected, data.db.connected ? 'есть' : 'нет');
+  mark($('dbrev'), !!data.db.revision, data.db.revision || 'миграции не применены');
+  $('dberr').textContent = data.db.error || '';
+
+  const pills = $('schemas');
+  pills.innerHTML = '';
+  for (const [name, present] of Object.entries(data.db.schemas || {})) {
+    const el = document.createElement('span');
+    el.className = 'pill ' + (present ? 'on' : 'off');
+    el.textContent = name;
+    pills.appendChild(el);
+  }
+
+  const demo = (data.bus.consumers || []).find(c => c.name === 'demo');
+  $('published').textContent = data.bus.published;
+  $('handled').textContent = demo ? demo.handled + ' из ' + data.bus.published : 'консьюмер ещё не отметился';
+  $('cursor').textContent = demo ? demo.last_id : '—';
+  $('pending').textContent = demo ? demo.pending : '—';
+  $('delivered').textContent = data.bus.delivered_in_process;
+  $('dead').textContent = data.bus.dead_letters;
+  $('buserr').textContent = data.bus.error || '';
+}
+
+$('send').addEventListener('click', async () => {
+  $('sent').textContent = 'отправляю…';
+  try {
+    const res = await fetch('/api/v1/dev/test-event', {method: 'POST'});
+    const body = await res.json();
+    $('sent').textContent = 'опубликовано событие №' + body.published_id;
+  } catch (e) {
+    $('sent').textContent = 'не получилось: ' + e;
+  }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
