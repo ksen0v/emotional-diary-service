@@ -12,6 +12,8 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "python-multipart>=0.0.12",
+    "argon2-cffi>=23.1",
+    "email-validator>=2.2",
 ]
 
 [project.optional-dependencies]

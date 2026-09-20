@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from eds.entrypoints.api import app
+from eds.version import STEP
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ async def test_health_shape(client) -> None:
     body = res.json()
 
     assert body["service"] == "Emotional Diary Service"
-    assert body["step"]["number"] == 0
+    assert body["step"]["number"] == STEP
     for key in ("version", "env", "server_time", "secret_key_set", "db", "bus", "ok"):
         assert key in body, f"в health нет поля {key}"
     for key in ("connected", "revision", "schemas", "error"):

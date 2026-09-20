@@ -34,5 +34,19 @@ services:
     command: >
       sh -c "alembic upgrade head && python -m eds.entrypoints.api"
 
+  web:
+    build: ./web
+    depends_on:
+      - api
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web/src:/app/src
+      - ./web/index.html:/app/index.html
+      - ./web/vite.config.ts:/app/vite.config.ts
+      - ./web/tsconfig.json:/app/tsconfig.json
+
 volumes:
   pgdata:

@@ -17,7 +17,8 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.contracts import events as ev
-from eds.platform import bus, db, log
+from eds.modules.identity.api import router as identity_router
+from eds.platform import bus, db, errors, log
 from eds.platform.config import settings
 from eds.version import STEP, STEP_NAME, VERSION
 
@@ -54,6 +55,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Emotional Diary Service", version=VERSION, lifespan=lifespan)
+errors.install(app)
+app.include_router(identity_router)
 
 
 @app.get("/api/v1/health")

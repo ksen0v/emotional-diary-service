@@ -5,19 +5,12 @@
 
 import os
 
-import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from eds.contracts import events as ev
 from eds.platform import bus
 
-
-@pytest.fixture
-async def factory(test_db_url: str):
-    engine = create_async_engine(test_db_url)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
+# фикстура factory живёт в conftest.py — она общая для всех тестов с базой
 
 
 async def test_publish_and_consume(factory, monkeypatch) -> None:

@@ -1,0 +1,89 @@
+/* Тёмная сдержанная тема из прототипа. Цвет здесь означает смысл,
+   а не украшение: зелёный, жёлтый и красный зарезервированы под допуск и тревоги. */
+:root {
+  --bg: #141413;
+  --panel: #1c1c1a;
+  --panel-2: #24241f;
+  --line: #2b2b27;
+  --line-2: #33332e;
+  --fg: #edebe6;
+  --dim: #a9a69e;
+  --faint: #85837c;
+  --ok: #6fa97f;
+  --warn: #c9a76a;
+  --bad: #e4897a;
+  --accent: #7fa0c9;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: #a3bcda; }
+
+.mono { font-family: 'IBM Plex Mono', monospace; }
+.serif { font-family: 'Instrument Serif', Georgia, serif; font-weight: 400; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.klabel {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+input, select {
+  padding: 9px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+}
+input:focus, select:focus { outline: none; border-color: #4a4a42; }
+input[aria-invalid='true'] { border-color: var(--bad); }
+
+button {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 16px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #4a4a42; color: var(--fg); }
+button:disabled { color: #5a5852; border-color: #262622; cursor: default; }
+button.primary { background: #28281f; border-color: #3a3a33; color: var(--fg); }
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--dim);
+}
+.nav:hover { background: var(--panel-2); color: var(--fg); }
+.nav.on { background: #28281f; color: var(--fg); }
+.nav-dim { display: flex; align-items: center; padding: 9px 10px; font-size: 14px; color: var(--faint); }
+
+.err { color: var(--bad); font-size: 13px; }
+.ok-text { color: var(--ok); font-size: 13px; }
+.hint { color: var(--faint); font-size: 12px; line-height: 1.6; }
