@@ -39,6 +39,11 @@ class UserPrefs:
     day_cutoff: dt.time
     significance_pct: Decimal
     shadow_mode: bool
+    # Пороги допуска живут в настройках трейдера (ТЗ 5.2), а считает по ним
+    # модуль daybook. Он не имеет права читать схему identity, поэтому пороги
+    # приходят сюда тем же путём, что таймзона и порог значимости.
+    pass_score: int = 19
+    min_score: int = 13
 
 
 UserResolver = Callable[[AsyncSession, str], Awaitable[CurrentUser]]

@@ -1,5 +1,8 @@
 """Регистрация, вход, сессии, настройки — через HTTP, как это делает фронт."""
 
+import datetime as dt
+import zoneinfo
+
 import httpx
 import pytest
 
@@ -18,6 +21,26 @@ async def register(client: httpx.AsyncClient, email: str = EMAIL) -> httpx.Respo
     return await client.post(
         "/api/v1/auth/register", json={"email": email, "password": PASSWORD}
     )
+
+
+async def move_day_boundary_away(client: httpx.AsyncClient) -> None:
+    """Отодвинуть границу торгового дня на шесть часов вперёд от местного времени.
+
+    Не удобство, а защита от ложного падения. Сделки в тестах подаются «минуту
+    назад», «десять минут назад», и при границе по умолчанию прогон в пределах
+    часа от неё раскладывает их по двум торговым дням. Такой тест падает раз
+    в сутки и ничего не сообщает о коде.
+    """
+    local = dt.datetime.now(zoneinfo.ZoneInfo("Europe/Moscow"))
+    cutoff = (
+        (local + dt.timedelta(hours=6)).replace(minute=0, second=0, microsecond=0).time()
+    )
+    res = await client.patch(
+        "/api/v1/me/settings",
+        headers=csrf(client),
+        json={"day_cutoff": cutoff.isoformat()},
+    )
+    assert res.status_code == 200, res.text
 
 
 async def test_register_then_me(app_client: httpx.AsyncClient) -> None:

@@ -1,8 +1,9 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useSetMe } from '../lib/auth'
-import type { Me } from '../lib/types'
-import { useConnections } from './SourceCard'
+import { useToday } from '../pages/TodayPage'
+import type { Me, Today } from '../lib/types'
+import { dateTime } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
@@ -17,8 +18,7 @@ const SECTIONS = [
 export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   const setMe = useSetMe()
   const navigate = useNavigate()
-  const connections = useConnections()
-  const active = connections.data?.connections.find((c) => c.is_active)
+  const today = useToday()
 
   async function logout() {
     await api.post('/auth/logout')
@@ -73,14 +73,14 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
             background: '#191917',
           }}
         >
-          <span style={{ fontSize: 13, color: 'var(--dim)' }}>
-            {active ? `Источник: ${active.provider}` : 'Источник не подключён'}
+          <Admission today={today.data} />
+          <span style={{ fontSize: 13, color: 'var(--faint)' }} title="Стрик появится на шаге 7">
+            стрик —
           </span>
-          {active?.accounts[0] && (
-            <span style={{ fontSize: 13, color: 'var(--faint)' }}>
-              {active.accounts[0].name}
-            </span>
-          )}
+          <Sync today={today.data} />
+          <span style={{ fontSize: 13, color: 'var(--faint)' }}>
+            {today.data?.source?.account ?? 'счёт не выбран'}
+          </span>
           <div style={{ flexGrow: 1 }} />
           <span style={{ fontSize: 13, color: 'var(--dim)' }}>{me.user.email}</span>
           <button onClick={logout} style={{ fontSize: 12, padding: '6px 12px' }}>
@@ -105,5 +105,48 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
         <div style={{ flexGrow: 1, padding: '20px 24px', minHeight: 0 }}>{children}</div>
       </div>
     </div>
+  )
+}
+
+
+// Топ-бар из дизайна: допуск, стрик, синк, аккаунт. Все четыре всегда на виду,
+// потому что каждый отвечает на вопрос, который иначе задаётся слишком поздно.
+const ADMISSION: Record<string, { label: string; color: string }> = {
+  green: { label: 'Зелёный', color: 'var(--ok)' },
+  red: { label: 'Под риском', color: 'var(--warn)' },
+  denied: { label: 'Нет допуска', color: 'var(--bad)' },
+}
+
+function Admission({ today }: { today: Today | undefined }) {
+  const verdict = today?.admission?.verdict
+  const shown = verdict
+    ? ADMISSION[verdict]
+    : { label: 'Сессия не открыта', color: 'var(--dim)' }
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
+      <span
+        style={{ width: 8, height: 8, borderRadius: 4, background: shown.color }}
+      />
+      <span style={{ color: 'var(--dim)' }}>{shown.label}</span>
+    </span>
+  )
+}
+
+function Sync({ today }: { today: Today | undefined }) {
+  const source = today?.source
+  if (!source) {
+    return (
+      <span style={{ fontSize: 13, color: 'var(--faint)' }}>синк: нет источника</span>
+    )
+  }
+  // Если синк умер, защиты нет — это должно быть заметно, поэтому ошибка
+  // показывается цветом, а не текстом мелким шрифтом.
+  return (
+    <span
+      style={{ fontSize: 13, color: source.stale ? 'var(--bad)' : 'var(--dim)' }}
+      title={source.last_event_at ? `последняя сверка ${dateTime(source.last_event_at)}` : ''}
+    >
+      синк: {source.stale ? 'ошибка' : source.last_event_at ? dateTime(source.last_event_at) : 'ещё не было'}
+    </span>
   )
 }

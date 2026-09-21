@@ -27,7 +27,16 @@ async def test_publish_and_consume(factory, monkeypatch) -> None:
     assert event_id is not None
 
     consumer = bus.Consumer(f"test-{os.getpid()}-{event_id}", handler)
-    handled = await consumer.step()
+    # Новый консьюмер начинает с нуля и идёт по outbox порциями. Событий в базе
+    # к этому моменту может быть больше одной порции, поэтому догоняем до конца,
+    # а не рассчитываем на один проход: иначе тест начнёт падать просто от того,
+    # что событий в базе стало много.
+    handled = 0
+    while True:
+        step = await consumer.step()
+        handled += step
+        if step == 0 or any(e.id == event_id for e in received):
+            break
 
     assert handled >= 1
     assert any(e.id == event_id for e in received)

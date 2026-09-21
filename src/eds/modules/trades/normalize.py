@@ -6,32 +6,32 @@
 
 import datetime as dt
 import hashlib
-import zoneinfo
 from dataclasses import dataclass
 from decimal import Decimal
 
 from eds.contracts.source import IncomingTag
 
+# Правило торгового дня общее для приёма сделок и для сессии, поэтому живёт
+# в контрактах. Здесь оставлено под прежним именем: приём считает день
+# по времени ОТКРЫТИЯ сделки и фиксирует его навсегда.
+from eds.contracts.trading_time import trading_day
+
 MARK_CLEAN = "clean"
 MARK_VIOLATION = "violation"
 MARK_UNREVIEWED = "unreviewed"
 
-
-def trading_day(open_time: dt.datetime, timezone: str, cutoff: dt.time) -> dt.date:
-    """Торговый день сделки: по времени ОТКРЫТИЯ, в таймзоне трейдера.
-
-    Граница дня сдвигает сутки: при границе 03:00 сделка, открытая в 01:30,
-    относится к предыдущему торговому дню. Так ночная торговля не разрывается
-    на два дня посередине сессии.
-
-    Значение фиксируется при приёме и больше не меняется: при смене таймзоны
-    история не пересчитывается (решение Архитектуры ч.1).
-    """
-    local = open_time.astimezone(zoneinfo.ZoneInfo(timezone))
-    day = local.date()
-    if local.time() < cutoff:
-        day = day - dt.timedelta(days=1)
-    return day
+__all__ = [
+    "MARK_CLEAN",
+    "MARK_UNREVIEWED",
+    "MARK_VIOLATION",
+    "CurvePoint",
+    "day_curve",
+    "is_significant",
+    "loss_streak",
+    "marking_of",
+    "tags_hash",
+    "trading_day",
+]
 
 
 def is_significant(account_return_pct: Decimal, significance_pct: Decimal) -> bool:
@@ -104,3 +104,23 @@ def day_curve(points: list[tuple[dt.datetime, str, Decimal]]) -> list[CurvePoint
             )
         )
     return out
+
+
+def loss_streak(returns: list[tuple[Decimal, bool]]) -> int:
+    """Текущая серия убыточных сделок подряд (ТЗ 6.3).
+
+    Пыль прозрачна: сделка ниже порога значимости серию не продолжает и не
+    обнуляет. Без этого мелкая прибыль в три цента между двумя стопами спасала
+    бы от блокировки, а мелкий убыток изображал бы серию, которой не было.
+
+    Вход — в порядке закрытия сделок: пары (процент от депозита, значимость).
+    """
+    streak = 0
+    for account_return_pct, significant in returns:
+        if not significant:
+            continue
+        if account_return_pct < 0:
+            streak += 1
+        else:
+            streak = 0
+    return streak

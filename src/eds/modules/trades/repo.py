@@ -222,3 +222,19 @@ async def days_count(
         select(func.count(func.distinct(base.c.trading_day))).select_from(base)
     )
     return res.scalar_one()
+
+
+async def day_returns(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> list[tuple[Decimal, bool]]:
+    """Проценты и значимость сделок дня в порядке закрытия — вход для серии убытков."""
+    res = await s.execute(
+        select(Trade.account_return_pct, Trade.is_significant)
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day == day,
+            Trade.is_open.is_(False),
+        )
+        .order_by(Trade.close_time, Trade.id)
+    )
+    return [(row[0], row[1]) for row in res]

@@ -319,3 +319,42 @@ def quantize_money(value: Decimal | None) -> Decimal | None:
 
 def quantize_pct(value: Decimal | None) -> Decimal | None:
     return None if value is None else Decimal(value).quantize(Decimal("0.01"))
+
+
+# --- счётчики дня ---
+
+
+async def day_counters(s: AsyncSession, user_id: uuid.UUID, day: dt.date) -> dict:
+    """Счётчики торгового дня: то, на что смотрят правила и экран «Сегодня».
+
+    Три показателя из ТЗ 6.3 считаются здесь, а не в движке правил: они
+    описывают день, а не правило, и обнуляются на границе дня сами собой —
+    потому что считаются по сделкам этого дня.
+    """
+    totals_row = await repo.totals(s, user_id, (day, day), None)
+    points = await curve(s, user_id, day)
+    returns = await repo.day_returns(s, user_id, day)
+
+    equity = points[-1].equity_pct if points else Decimal("0")
+    peak = points[-1].peak_pct if points else Decimal("0")
+    drawdown = peak - equity
+
+    return {
+        "all_trades": totals_row["count"],
+        "significant_trades": totals_row["significant_count"],
+        "violations": totals_row["violations_count"],
+        "unmarked": totals_row["unmarked_count"],
+        "loss_streak": normalize.loss_streak(returns),
+        "equity_pct": quantize_pct(equity),
+        "peak_pct": quantize_pct(peak),
+        "drawdown_pct": quantize_pct(drawdown),
+        # «Убыток суммарно» — сумма результата дня, если она отрицательная (ТЗ 6.3).
+        # Ноль при прибыльном дне, а не отрицательное число: показатель назван
+        # убытком, и отрицательный убыток читался бы как загадка.
+        "loss_sum_pct": quantize_pct(-equity if equity < 0 else Decimal("0")),
+        "profit_usd": quantize_money(totals_row["profit_usd"]),
+        # Источник без открытых позиций не даёт нереализованного результата.
+        # null, а не ноль: ноль значил бы «позиций нет», а это другое.
+        "unrealized_pct": None,
+        "drawdown_full_pct": None,
+    }

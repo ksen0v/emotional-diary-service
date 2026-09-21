@@ -62,6 +62,8 @@ WIPE = (
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM daybook.premarket_checks WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM daybook.trading_days WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM identity.users WHERE email LIKE '%@edstest.net'",
 )
 

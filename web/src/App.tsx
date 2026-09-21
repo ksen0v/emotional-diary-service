@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useMe } from './lib/auth'
 import { Login } from './pages/Login'
+import { PremarketPage } from './pages/PremarketPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { TodayPage } from './pages/TodayPage'
 import { TradesPage } from './pages/TradesPage'
 import { Shell } from './ui/Shell'
 import { Stub } from './ui/Stub'
@@ -31,16 +33,8 @@ export function App() {
     <Shell me={me.data}>
       <Routes>
         <Route path="/settings" element={<SettingsPage me={me.data} />} />
-        <Route
-          path="/today"
-          element={
-            <Stub
-              title="Сегодня"
-              step={5}
-              what="Допуск, счётчики дня, запись за сегодня и состояние блокировки."
-            />
-          }
-        />
+        <Route path="/today" element={<TodayPage />} />
+        <Route path="/premarket" element={<PremarketPage />} />
         <Route
           path="/trades"
           element={
@@ -65,7 +59,7 @@ export function App() {
           path="/rules"
           element={<Stub title="Правила" step={8} what="Конструктор правил и триггеры." />}
         />
-        <Route path="*" element={<Navigate to="/trades" replace />} />
+        <Route path="*" element={<Navigate to="/today" replace />} />
       </Routes>
     </Shell>
   )

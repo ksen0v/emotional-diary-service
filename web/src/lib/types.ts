@@ -210,3 +210,91 @@ export type MarkedOut = {
   effects: { changed: boolean; marking_before: string | null }
   metrics: MarkingMetrics['marking']
 }
+
+// --- торговый день и чек (Архитектура ч.2 §3.5) ---
+
+export type Admission = {
+  verdict: 'green' | 'red' | 'denied'
+  score: number | null
+  checked_at: string | null
+}
+
+export type DayCounters = {
+  all_trades: number
+  significant_trades: number
+  violations: number
+  unmarked: number
+  loss_streak: number
+  equity_pct: string
+  peak_pct: string
+  drawdown_pct: string
+  loss_sum_pct: string
+  profit_usd: string
+  unrealized_pct: string | null
+  drawdown_full_pct: string | null
+}
+
+export type TodaySource = {
+  provider: string
+  sync_state: string
+  account: string | null
+  last_event_at: string | null
+  stale: boolean
+  capabilities: Record<string, boolean | string>
+}
+
+export type DayState =
+  | 'no_source'
+  | 'no_check'
+  | 'check_failed'
+  | 'trading'
+  | 'session_closed'
+
+export type Today = {
+  day: string
+  server_time: string
+  day_ends_at: string
+  state: DayState
+  shadow_mode: boolean
+  admission: Admission | null
+  session: { opened_at: string | null; closed_at: string | null }
+  lock: null
+  entry: null
+  streak: null
+  review: { state: string; required_for_next_session: boolean }
+  counters: DayCounters
+  source: TodaySource | null
+  attention: { code: string; count: number; message: string }[]
+  thresholds: { pass_score: number; min_score: number }
+}
+
+export type PremarketQuestion = {
+  id: string
+  text: string
+  short: string
+  min: number
+  max: number
+  labels: Record<string, string>
+  inverted: boolean
+}
+
+export type PremarketCatalog = {
+  questions: PremarketQuestion[]
+  pass_score: number
+  min_score: number
+  max_score: number
+  already_done: boolean
+}
+
+export type CheckResult = {
+  day: string
+  score: number
+  max_score: number
+  pass_score: number
+  min_score: number
+  verdict: 'green' | 'red' | 'denied'
+  session_opened_at: string | null
+  message: string
+  restrictions: { text: string; note: string } | null
+  weak: { id: string; short: string; points: number; max: number }[]
+}

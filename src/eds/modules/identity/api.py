@@ -59,6 +59,8 @@ async def _resolve_prefs(s: AsyncSession, user_id: uuid.UUID) -> auth.UserPrefs:
         day_cutoff=row.day_cutoff,
         significance_pct=row.significance_pct,
         shadow_mode=row.shadow_mode,
+        pass_score=row.pass_score,
+        min_score=row.min_score,
     )
 
 

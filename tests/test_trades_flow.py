@@ -7,7 +7,9 @@
 import httpx
 import pytest
 
-from tests.test_identity import csrf, register
+from eds.app.consumers import all_consumers
+from eds.platform import bus
+from tests.test_identity import csrf, move_day_boundary_away, register
 
 pytestmark = pytest.mark.usefixtures("clean_users")
 
@@ -17,6 +19,7 @@ VIOLATION_TAG = "НЕ СИСТЕМНАЯ ТОРГОВЛЯ"
 
 async def setup_user(client: httpx.AsyncClient) -> None:
     await register(client)
+    await move_day_boundary_away(client)
     res = await client.post("/api/v1/source/connections/fake", headers=csrf(client))
     assert res.status_code == 200, res.text
     assert res.json()["is_active"] is True
@@ -47,6 +50,17 @@ async def push(
     )
     assert res.status_code == 200, res.text
     return res
+
+
+async def drain(consumer: bus.Consumer) -> None:
+    """Догнать шину до конца.
+
+    Один проход берёт ограниченную порцию, а событий в базе к этому моменту
+    может быть много: без догона тест начал бы падать просто от их количества.
+    """
+    for _ in range(50):
+        if await consumer.step() == 0:
+            return
 
 
 async def sync(client: httpx.AsyncClient) -> dict:
@@ -119,9 +133,6 @@ async def test_violation_tag_remarks_existing_trades(app_client: httpx.AsyncClie
     Это не прямой вызов: source публикует событие, trades его обрабатывает.
     Тест ждёт консьюмера, поэтому проверяет и шину заодно.
     """
-    from eds.app.consumers import on_tag_dictionary_changed
-    from eds.platform import bus
-
     await setup_user(app_client)
     await push(app_client, tags=[VIOLATION_TAG])
     await sync(app_client)
@@ -138,8 +149,9 @@ async def test_violation_tag_remarks_existing_trades(app_client: httpx.AsyncClie
     assert res.status_code == 200
 
     # Консьюмер в тесте запускаем вручную: в приложении он работает фоном.
-    consumer = bus.Consumer("test-remark", on_tag_dictionary_changed)
-    await consumer.step()
+    # Берём настоящий из регистрации, а не собираем копию: копия не знала бы
+    # про фильтр по типу события и спотыкалась бы на чужих событиях.
+    await drain(all_consumers()[0])
 
     body = await feed(app_client)
     assert body["items"][0]["marking"] == "violation"
