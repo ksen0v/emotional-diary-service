@@ -58,6 +58,27 @@ class FakeSource:
             )
         ]
 
+    async def fetch_tags(self) -> list[IncomingTag]:
+        """Теги, встречавшиеся в ленте. Своего словаря у фейка нет."""
+        rows = await self._s.execute(
+            select(FakeFeedItem.payload).where(
+                FakeFeedItem.connection_id == self._connection_id
+            )
+        )
+        seen: dict[str, IncomingTag] = {}
+        for payload in rows.scalars():
+            for tag in payload.get("tags", []):
+                external_id = str(tag["external_id"])
+                seen.setdefault(
+                    external_id,
+                    IncomingTag(
+                        external_id=external_id,
+                        name=tag["name"],
+                        column_key=tag.get("column_key", "entry_reason"),
+                    ),
+                )
+        return list(seen.values())
+
     async def fetch_trades(
         self, since: dt.datetime, until: dt.datetime | None = None
     ) -> list[IncomingTrade]:

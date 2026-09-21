@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.modules.source import repo, service
-from eds.modules.source.models import Account, Connection, Tag
+from eds.modules.source.models import (
+    Account,
+    Connection,
+    RateLimitRow,
+    ReconcileRun,
+    Tag,
+)
 from eds.platform import auth, db
 
 router = APIRouter(prefix="/api/v1", tags=["source"])
@@ -35,6 +41,24 @@ class AccountOut(BaseModel):
     market: str | None
 
 
+class ReconcileOut(BaseModel):
+    """Последняя сверка. Нужна, чтобы «сделки не приехали» было чем объяснить."""
+
+    started_at: dt.datetime
+    finished_at: dt.datetime | None
+    kind: str
+    status: str
+    trades_seen: int
+    trades_new: int
+    error: str | None
+
+
+class RateLimitOut(BaseModel):
+    limit: int | None
+    remaining: int | None
+    reset_at: dt.datetime | None
+
+
 class ConnectionOut(BaseModel):
     id: uuid.UUID
     provider: str
@@ -45,8 +69,11 @@ class ConnectionOut(BaseModel):
     ingest_from: dt.datetime
     activated_at: dt.datetime | None
     capabilities: dict
+    permissions: dict | None
     last_error: str | None
     accounts: list[AccountOut]
+    last_reconcile: ReconcileOut | None = None
+    rate_limit: RateLimitOut | None = None
 
 
 class ConnectionsOut(BaseModel):
@@ -82,7 +109,12 @@ class FakeTradeIn(BaseModel):
     duration_sec: int = Field(default=300, ge=1, le=60 * 60 * 24)
 
 
-def _connection_out(row: Connection, accounts: list[Account]) -> ConnectionOut:
+def _connection_out(
+    row: Connection,
+    accounts: list[Account],
+    last_reconcile: ReconcileRun | None = None,
+    rate_limit: RateLimitRow | None = None,
+) -> ConnectionOut:
     return ConnectionOut(
         id=row.id,
         provider=row.provider,
@@ -93,6 +125,7 @@ def _connection_out(row: Connection, accounts: list[Account]) -> ConnectionOut:
         ingest_from=row.ingest_from,
         activated_at=row.activated_at,
         capabilities=row.capabilities,
+        permissions=row.permissions,
         last_error=row.last_error,
         accounts=[
             AccountOut(
@@ -104,6 +137,38 @@ def _connection_out(row: Connection, accounts: list[Account]) -> ConnectionOut:
             )
             for a in accounts
         ],
+        last_reconcile=(
+            None
+            if last_reconcile is None
+            else ReconcileOut(
+                started_at=last_reconcile.started_at,
+                finished_at=last_reconcile.finished_at,
+                kind=last_reconcile.kind,
+                status=last_reconcile.status,
+                trades_seen=last_reconcile.trades_seen,
+                trades_new=last_reconcile.trades_new,
+                error=last_reconcile.error,
+            )
+        ),
+        rate_limit=(
+            None
+            if rate_limit is None
+            else RateLimitOut(
+                limit=rate_limit.limit_value,
+                remaining=rate_limit.remaining,
+                reset_at=rate_limit.reset_at,
+            )
+        ),
+    )
+
+
+async def _load_connection_out(s: AsyncSession, row: Connection) -> ConnectionOut:
+    """Подключение со всем, что к нему приложено: счета, сверка, лимиты."""
+    return _connection_out(
+        row,
+        await repo.accounts_of(s, row.id),
+        await repo.last_reconcile_run(s, row.id),
+        await repo.rate_limit_of(s, row.id),
     )
 
 
@@ -125,8 +190,7 @@ async def connections(
     out = []
     active_id = None
     for row in rows:
-        accounts = await repo.accounts_of(s, row.id)
-        out.append(_connection_out(row, accounts))
+        out.append(await _load_connection_out(s, row))
         if row.is_active:
             active_id = row.id
     return ConnectionsOut(connections=out, active_connection_id=active_id)
@@ -145,17 +209,30 @@ async def connect_fake(
     return _connection_out(connection, accounts)
 
 
+class ActivateIn(BaseModel):
+    """Подтверждение переключения источника (Архитектура ч.2 §3.3)."""
+
+    confirm: bool = False
+
+
 @router.post("/source/connections/{connection_id}/activate", response_model=ConnectionOut)
 async def activate(
     connection_id: uuid.UUID,
+    body: ActivateIn | None = None,
     user: auth.CurrentUser = Depends(auth.current_user),
     _: None = Depends(auth.check_csrf),
     s: AsyncSession = Depends(db.session),
 ) -> ConnectionOut:
-    connection = await service.activate(s, user.user_id, connection_id)
-    accounts = await repo.accounts_of(s, connection.id)
+    """Сделать источник активным.
+
+    Переключение с одного источника на другой требует confirm: расчёты после
+    него начинаются заново, и случайный клик не должен этого делать.
+    """
+    connection = await service.activate(
+        s, user.user_id, connection_id, confirm=bool(body and body.confirm)
+    )
     await s.commit()
-    return _connection_out(connection, accounts)
+    return await _load_connection_out(s, connection)
 
 
 class CapabilitiesIn(BaseModel):
@@ -227,3 +304,107 @@ async def push_fake_trade(
     )
     await s.commit()
     return {"queued": payload["external_id"], "close_time": payload["close_time"]}
+
+
+# --- подключение настоящего источника ключом ---
+
+
+class ConnectIn(BaseModel):
+    """Тело подключения (контракт §3.3). У TMM нет ни секрета, ни рынка."""
+
+    provider: str = Field(pattern="^(tmm|binance)$")
+    market: str | None = None
+    key: str = Field(min_length=8, max_length=512)
+    secret: str | None = None
+
+
+class ProbeOut(BaseModel):
+    """Что провайдер показал при подключении. Ничего из этого не сохраняется."""
+
+    accounts: list[dict]
+    entry_tags: list[dict]
+    trades_seen: int
+    sample: list[dict]
+    tags_available: bool
+    tags_problem: str | None
+    accounts_from_trades: bool
+    window_filter_honored: bool | None
+    mapping_errors: list[str]
+
+
+class WarningOut(BaseModel):
+    code: str
+    message: str
+
+
+class ConnectOut(BaseModel):
+    connection: ConnectionOut
+    accounts: list[AccountOut]
+    probe: ProbeOut
+    warnings: list[WarningOut]
+
+
+async def _connect_out(s: AsyncSession, result: dict) -> ConnectOut:
+    connection = result["connection"]
+    out = await _load_connection_out(s, connection)
+    return ConnectOut(
+        connection=out,
+        accounts=out.accounts,
+        probe=ProbeOut(**result["probe"].as_dict()),
+        warnings=[WarningOut(**w) for w in result["warnings"]],
+    )
+
+
+@router.post("/source/connections", response_model=ConnectOut, status_code=201)
+async def connect(
+    body: ConnectIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> ConnectOut:
+    """Подключить источник по ключу.
+
+    Ключ проверяется до создания подключения: если провайдер его отклонил,
+    в настройках не остаётся источника, который никогда не заработает.
+    """
+    result = await service.connect(
+        s,
+        user.user_id,
+        provider=body.provider,
+        key=body.key,
+        market=body.market,
+        secret=body.secret,
+    )
+    await s.commit()
+    return await _connect_out(s, result)
+
+
+@router.post("/source/connections/{connection_id}/verify", response_model=ConnectOut)
+async def verify(
+    connection_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> ConnectOut:
+    """Проверить подключение. Точку отсчёта не двигает."""
+    try:
+        result = await service.verify(s, user.user_id, connection_id)
+    except Exception:
+        # Состояние «ошибка» и её текст должны сохраниться, иначе экран
+        # источника покажет «подключено» у неработающего ключа.
+        await s.commit()
+        raise
+    await s.commit()
+    return await _connect_out(s, result)
+
+
+@router.delete("/source/connections/{connection_id}", status_code=204)
+async def delete(
+    connection_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> None:
+    """Удалить подключение. Сделки остаются: история неизменяема (ТЗ 9.2)."""
+    await service.delete(s, user.user_id, connection_id)
+    await s.commit()

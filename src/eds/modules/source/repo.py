@@ -3,12 +3,20 @@
 import datetime as dt
 import uuid
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.contracts.source import IncomingAccount, IncomingTag
-from eds.modules.source.models import Account, Connection, FakeFeedItem, Tag
+from eds.modules.source.models import (
+    Account,
+    Connection,
+    FakeFeedItem,
+    RateLimitRow,
+    ReconcileRun,
+    Tag,
+)
 
 
 async def active_connection(s: AsyncSession, user_id: uuid.UUID) -> Connection | None:
@@ -48,6 +56,10 @@ async def create_connection(
     market: str | None = None,
     key_masked: str | None = None,
     ingest_from: dt.datetime | None = None,
+    key_encrypted: bytes | None = None,
+    secret_encrypted: bytes | None = None,
+    key_version: int = 1,
+    base_url: str | None = None,
 ) -> Connection:
     now = dt.datetime.now(dt.UTC)
     row = Connection(
@@ -55,9 +67,9 @@ async def create_connection(
         user_id=user_id,
         provider=provider,
         market=market,
-        key_encrypted=None,
-        secret_encrypted=None,
-        key_version=1,
+        key_encrypted=key_encrypted,
+        secret_encrypted=secret_encrypted,
+        key_version=key_version,
         key_masked=key_masked,
         auth_kind="api_key",
         is_active=False,
@@ -66,7 +78,7 @@ async def create_connection(
         # Истории не импортируем — решение Архитектуры ч.1 §4.3.
         ingest_from=ingest_from or now,
         state="connected",
-        base_url=None,
+        base_url=base_url,
         capabilities=capabilities,
         permissions=None,
         last_error=None,
@@ -217,3 +229,142 @@ async def fake_feed_size(s: AsyncSession, connection_id: uuid.UUID) -> int:
         select(FakeFeedItem.id).where(FakeFeedItem.connection_id == connection_id)
     )
     return len(list(res))
+
+
+async def connection_by_provider(
+    s: AsyncSession, user_id: uuid.UUID, provider: str, market: str | None
+) -> Connection | None:
+    res = await s.execute(
+        select(Connection).where(
+            Connection.user_id == user_id,
+            Connection.provider == provider,
+            Connection.market.is_(None) if market is None else Connection.market == market,
+        )
+    )
+    return res.scalar_one_or_none()
+
+
+async def delete_connection(s: AsyncSession, connection: Connection) -> None:
+    """Удалить подключение. Сделки остаются: история неизменяема (ТЗ 9.2).
+
+    Каскад уносит счета, словарь тегов и ленту фейка — всё, что принадлежит
+    подключению. Сделки на него не ссылаются внешним ключом именно поэтому:
+    между схемами модулей ключей нет, и удаление источника не трогает историю.
+    """
+    await s.execute(sql_delete(Connection).where(Connection.id == connection.id))
+    await s.flush()
+
+
+async def start_reconcile_run(
+    s: AsyncSession,
+    connection_id: uuid.UUID,
+    *,
+    kind: str,
+    window_from: dt.datetime | None,
+    window_to: dt.datetime | None,
+) -> ReconcileRun:
+    row = ReconcileRun(
+        connection_id=connection_id,
+        kind=kind,
+        window_from=window_from,
+        window_to=window_to,
+        started_at=dt.datetime.now(dt.UTC),
+        finished_at=None,
+        status="running",
+        trades_seen=0,
+        trades_new=0,
+        error=None,
+    )
+    s.add(row)
+    await s.flush()
+    return row
+
+
+async def finish_reconcile_run(
+    s: AsyncSession,
+    run: ReconcileRun,
+    *,
+    status: str,
+    trades_seen: int = 0,
+    trades_new: int = 0,
+    error: str | None = None,
+) -> ReconcileRun:
+    run.status = status
+    run.trades_seen = trades_seen
+    run.trades_new = trades_new
+    run.error = error
+    run.finished_at = dt.datetime.now(dt.UTC)
+    await s.flush()
+    return run
+
+
+async def last_reconcile_run(
+    s: AsyncSession, connection_id: uuid.UUID
+) -> ReconcileRun | None:
+    res = await s.execute(
+        select(ReconcileRun)
+        .where(ReconcileRun.connection_id == connection_id)
+        .order_by(ReconcileRun.started_at.desc())
+        .limit(1)
+    )
+    return res.scalar_one_or_none()
+
+
+async def save_rate_limit(
+    s: AsyncSession,
+    connection_id: uuid.UUID,
+    *,
+    limit_value: int | None,
+    remaining: int | None,
+    reset_at: dt.datetime | None,
+) -> None:
+    """Сохранить снимок лимитов провайдера. Ничего не читаем — только пишем факт."""
+    if limit_value is None and remaining is None and reset_at is None:
+        return
+    now = dt.datetime.now(dt.UTC)
+    stmt = (
+        pg_insert(RateLimitRow)
+        .values(
+            connection_id=connection_id,
+            limit_value=limit_value,
+            remaining=remaining,
+            reset_at=reset_at,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=[RateLimitRow.connection_id],
+            set_={
+                "limit_value": limit_value,
+                "remaining": remaining,
+                "reset_at": reset_at,
+                "updated_at": now,
+            },
+        )
+    )
+    await s.execute(stmt)
+
+
+async def rate_limit_of(
+    s: AsyncSession, connection_id: uuid.UUID
+) -> RateLimitRow | None:
+    res = await s.execute(
+        select(RateLimitRow).where(RateLimitRow.connection_id == connection_id)
+    )
+    return res.scalar_one_or_none()
+
+
+async def set_state(
+    s: AsyncSession, connection: Connection, state: str, error: str | None = None
+) -> Connection:
+    connection.state = state
+    connection.last_error = error
+    await s.flush()
+    return connection
+
+
+async def set_capabilities(
+    s: AsyncSession, connection: Connection, capabilities: dict
+) -> Connection:
+    connection.capabilities = capabilities
+    await s.flush()
+    return connection

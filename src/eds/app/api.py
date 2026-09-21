@@ -5,6 +5,8 @@
 ни одному модулю.
 """
 
+import contextlib
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,13 @@ async def sync(
     На шаге 4 этот же путь будет вызываться по расписанию и после обрыва потока;
     кнопка в интерфейсе остаётся как способ проверить руками.
     """
-    report = await pipeline.sync(s, user.user_id)
+    try:
+        report = await pipeline.sync(s, user.user_id)
+    except Exception:
+        # Неудачную сверку тоже надо сохранить: без записи в журнале
+        # на вопрос «почему сделки не приехали» нечем ответить.
+        with contextlib.suppress(Exception):
+            await s.commit()
+        raise
     await s.commit()
     return report.as_dict()

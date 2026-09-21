@@ -89,6 +89,15 @@ class TradeSource(Protocol):
 
     async def fetch_accounts(self) -> list[IncomingAccount]: ...
 
+    async def fetch_tags(self) -> list[IncomingTag]:
+        """Словарь тегов разметки целиком, не только те, что встретились в сделках.
+
+        Нужен, потому что историю мы не импортируем: сразу после подключения
+        сделок ещё нет, а отметить «этот тег — нарушение» трейдеру нужно уже
+        тогда. Источник без тегов возвращает пустой список.
+        """
+        ...
+
     async def fetch_trades(
         self, since: dt.datetime, until: dt.datetime | None = None
     ) -> list[IncomingTrade]:

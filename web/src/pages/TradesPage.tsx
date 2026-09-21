@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { api } from '../lib/api'
-import type { Curve, Feed, MarkedOut, MarkingMetrics, Trade } from '../lib/types'
+import { ApiError, api } from '../lib/api'
+import type {
+  Curve,
+  Feed,
+  MarkedOut,
+  MarkingMetrics,
+  SyncReport,
+  Trade,
+} from '../lib/types'
 import { DayCurve } from '../ui/DayCurve'
 import { DevPanel } from '../ui/DevPanel'
 import { useConnections } from '../ui/SourceCard'
@@ -28,10 +35,26 @@ export function TradesPage() {
     connections.data?.connections.some((c) => c.is_active),
   )
   const qc = useQueryClient()
-  const provideTags = Boolean(
-    connections.data?.connections.find((c) => c.is_active)?.capabilities
-      .provides_tags,
-  )
+  const active = connections.data?.connections.find((c) => c.is_active)
+  const provideTags = Boolean(active?.capabilities.provides_tags)
+  const isFake = active?.provider === 'fake'
+  const [syncReport, setSyncReport] = useState<SyncReport | null>(null)
+  const [syncError, setSyncError] = useState('')
+  const sync = useMutation({
+    mutationFn: () => api.post<SyncReport>('/sync'),
+    onSuccess: (data) => {
+      setSyncReport(data)
+      setSyncError('')
+      qc.invalidateQueries({ queryKey: ['trades'] })
+      qc.invalidateQueries({ queryKey: ['curve'] })
+      qc.invalidateQueries({ queryKey: ['marking-metrics'] })
+      qc.invalidateQueries({ queryKey: ['connections'] })
+    },
+    onError: (err) => {
+      setSyncReport(null)
+      setSyncError(err instanceof ApiError ? err.message : 'Сверка не прошла.')
+    },
+  })
   const [period, setPeriod] = useState<Period>('today')
   const [filter, setFilter] = useState<Filter>('all')
   const [cursor, setCursor] = useState<string | null>(null)
@@ -83,12 +106,47 @@ export function TradesPage() {
         <div className="card" style={{ padding: '16px 18px' }}>
           <div style={{ color: 'var(--dim)' }}>Источник сделок не подключён.</div>
           <div className="hint" style={{ marginTop: 6 }}>
-            Подключить тестовый источник можно в настройках. Настоящий TMM — шаг 4.
+            Вставь ключ TMM на экране настроек — или подключи там тестовый источник.
           </div>
         </div>
       )}
 
-      {hasSource && <DevPanel />}
+      {hasSource && isFake && <DevPanel />}
+
+      {hasSource && !isFake && (
+        <div className="card" style={{ padding: '14px 18px' }}>
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}
+          >
+            <button
+              onClick={() => sync.mutate()}
+              disabled={sync.isPending}
+              style={{ fontSize: 12, padding: '6px 12px' }}
+            >
+              {sync.isPending ? 'Сверяю…' : 'Сверить сейчас'}
+            </button>
+            <span className="hint" style={{ flex: 1 }}>
+              Сверка забирает сделки у источника. Автоматическая — по расписанию
+              и по событию из потока, это следующая часть шага 4.
+            </span>
+          </div>
+          {syncReport && (
+            <div className="hint mono" style={{ marginTop: 8 }}>
+              получено {syncReport.received}, принято {syncReport.inserted},
+              переразмечено {syncReport.remarked}, без изменений{' '}
+              {syncReport.unchanged}, до отсчёта{' '}
+              {syncReport.skipped_before_ingest_from}, открытых{' '}
+              {syncReport.skipped_open}, чужой счёт{' '}
+              {syncReport.skipped_unknown_account}
+            </div>
+          )}
+          {syncError && (
+            <div className="err" style={{ marginTop: 8 }}>
+              {syncError}
+            </div>
+          )}
+        </div>
+      )}
 
       {period === 'today' && curve.data && <DayCurve curve={curve.data} />}
 

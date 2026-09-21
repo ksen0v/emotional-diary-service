@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
     LargeBinary,
     SmallInteger,
     Text,
@@ -75,6 +76,38 @@ class Tag(Base):
     name: Mapped[str] = mapped_column(Text)
     is_violation: Mapped[bool] = mapped_column(Boolean)
     seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReconcileRun(Base):
+    __tablename__ = "reconcile_runs"
+    __table_args__ = {"schema": SCHEMA}
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.connections.id")
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    window_from: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    window_to: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text)
+    trades_seen: Mapped[int] = mapped_column(Integer)
+    trades_new: Mapped[int] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class RateLimitRow(Base):
+    __tablename__ = "rate_limits"
+    __table_args__ = {"schema": SCHEMA}
+
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.connections.id"), primary_key=True
+    )
+    limit_value: Mapped[int | None] = mapped_column(Integer)
+    remaining: Mapped[int | None] = mapped_column(Integer)
+    reset_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
 
 
 class FakeFeedItem(Base):

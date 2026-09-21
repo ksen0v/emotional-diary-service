@@ -94,6 +94,22 @@ export type SourceAccount = {
   market: string | null
 }
 
+export type ReconcileRow = {
+  started_at: string
+  finished_at: string | null
+  kind: string
+  status: string
+  trades_seen: number
+  trades_new: number
+  error: string | null
+}
+
+export type RateLimitRow = {
+  limit: number | null
+  remaining: number | null
+  reset_at: string | null
+}
+
 export type Connection = {
   id: string
   provider: string
@@ -104,8 +120,51 @@ export type Connection = {
   ingest_from: string
   activated_at: string | null
   capabilities: Record<string, boolean | string>
+  permissions: Record<string, unknown> | null
   last_error: string | null
   accounts: SourceAccount[]
+  last_reconcile: ReconcileRow | null
+  rate_limit: RateLimitRow | null
+}
+
+// Проба подключения: что провайдер показал в ответ. Ничего из этого
+// не сохраняется — истории мы не импортируем (ТЗ 4.1).
+export type ProbeSample = {
+  external_id: string
+  symbol: string
+  side: 'long' | 'short'
+  profit_usd: string
+  account_return_pct: string
+  duration_sec: number | null
+  open_time: string
+  close_time: string | null
+  tags: string[]
+  is_open: boolean
+}
+
+export type Probe = {
+  accounts: { external_id: string; name: string; exchange: string | null }[]
+  entry_tags: { external_id: string; name: string }[]
+  trades_seen: number
+  sample: ProbeSample[]
+  tags_available: boolean
+  tags_problem: string | null
+  accounts_from_trades: boolean
+  window_filter_honored: boolean | null
+  mapping_errors: string[]
+}
+
+export type ConnectResult = {
+  connection: Connection
+  accounts: SourceAccount[]
+  probe: Probe
+  warnings: { code: string; message: string }[]
+}
+
+export type SwitchConsequences = {
+  consequences?: string[]
+  losing_capabilities?: string[]
+  gaining_capabilities?: string[]
 }
 
 export type Connections = {
