@@ -167,3 +167,58 @@ async def all_of_source(
         .order_by(Trade.close_time)
     )
     return list(res.scalars())
+
+
+async def marking_counts(
+    s: AsyncSession, user_id: uuid.UUID, days: tuple[dt.date, dt.date] | None
+) -> dict:
+    """Числа для метрик разметки одним запросом.
+
+    Отдельный запрос, а не проход по сделкам в питоне: метрики смотрят за месяц,
+    и тянуть тысячи строк ради шести чисел — плохая идея с первого дня.
+    """
+    base = _filtered(user_id, days, None).subquery()
+    res = await s.execute(
+        select(
+            func.count(),
+            func.count().filter(base.c.is_significant.is_(True)),
+            func.count().filter(base.c.marking == "clean"),
+            func.count().filter(base.c.marking == "violation"),
+            func.count().filter(base.c.marking == "unreviewed"),
+            func.count().filter(
+                (base.c.marking == "violation") & (base.c.profit_usd > 0)
+            ),
+            func.coalesce(
+                func.sum(base.c.profit_usd).filter(base.c.marking == "violation"), 0
+            ),
+        ).select_from(base)
+    )
+    (
+        trades_all,
+        significant,
+        clean,
+        violations,
+        unmarked,
+        violations_profitable,
+        violations_profit_sum,
+    ) = res.one()
+    return {
+        "trades_all": trades_all,
+        "trades_significant": significant,
+        "clean": clean,
+        "violations": violations,
+        "unmarked": unmarked,
+        "violations_profitable": violations_profitable,
+        "violations_profit_sum": Decimal(violations_profit_sum),
+    }
+
+
+async def days_count(
+    s: AsyncSession, user_id: uuid.UUID, days: tuple[dt.date, dt.date] | None
+) -> int:
+    """Сколько торговых дней со сделками попало в период — для порога достоверности."""
+    base = _filtered(user_id, days, None).subquery()
+    res = await s.execute(
+        select(func.count(func.distinct(base.c.trading_day))).select_from(base)
+    )
+    return res.scalar_one()

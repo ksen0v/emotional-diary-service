@@ -122,3 +122,32 @@ export type SyncReport = {
   skipped_open: number
   skipped_unknown_account: number
 }
+
+export type TagRow = {
+  external_id: string
+  name: string
+  column_key: string
+  is_violation: boolean
+}
+
+export type TagsBody = { tags: TagRow[]; available: boolean }
+
+export type MarkingMetrics = {
+  period: { level: string; from: string | null; to: string | null; today: string }
+  marking: {
+    trades: { all: number; significant: number }
+    marked: number
+    unmarked: number
+    coverage_pct: string
+    discipline_pct: string | null
+    violations: { count: number; profitable: number }
+    emotion_cost_usd: string
+  }
+  confidence: { enough_data: boolean; days_available: number; days_required: number }
+}
+
+export type MarkedOut = {
+  trade: Trade
+  effects: { changed: boolean; marking_before: string | null }
+  metrics: MarkingMetrics['marking']
+}

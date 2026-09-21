@@ -43,9 +43,11 @@ class UserPrefs:
 
 UserResolver = Callable[[AsyncSession, str], Awaitable[CurrentUser]]
 PrefsResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[UserPrefs]]
+CapabilitiesResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
 
 _user_resolver: UserResolver | None = None
 _prefs_resolver: PrefsResolver | None = None
+_capabilities_resolver: CapabilitiesResolver | None = None
 
 
 def register(user: UserResolver, prefs: PrefsResolver) -> None:
@@ -53,6 +55,16 @@ def register(user: UserResolver, prefs: PrefsResolver) -> None:
     global _user_resolver, _prefs_resolver
     _user_resolver = user
     _prefs_resolver = prefs
+
+
+def register_source(capabilities: CapabilitiesResolver) -> None:
+    """Вызывается модулем source. Больше никем.
+
+    Через это модуль trades узнаёт, отдаёт ли активный источник теги, не зная
+    о существовании модуля source.
+    """
+    global _capabilities_resolver
+    _capabilities_resolver = capabilities
 
 
 async def check_csrf(request: Request) -> None:
@@ -87,3 +99,15 @@ async def current_prefs(
     if _prefs_resolver is None:  # pragma: no cover
         raise RuntimeError("резолвер настроек не зарегистрирован")
     return await _prefs_resolver(s, user.user_id)
+
+
+async def source_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Возможности активного источника. Пусто — источник не подключён."""
+    if _capabilities_resolver is None:  # pragma: no cover — source не подключён
+        raise RuntimeError("резолвер возможностей источника не зарегистрирован")
+    return await _capabilities_resolver(s, user_id)
+
+
+async def source_provides_tags(s: AsyncSession, user_id: uuid.UUID) -> bool:
+    caps = await source_capabilities(s, user_id)
+    return bool(caps.get("provides_tags", False))

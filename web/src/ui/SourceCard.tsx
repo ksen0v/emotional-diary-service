@@ -30,6 +30,19 @@ export function SourceCard() {
 
   const active = connections.data?.connections.find((c) => c.is_active)
 
+  // Переключатель только для тестового источника: он позволяет проверить
+  // свою разметку до появления Binance, у которого тегов нет.
+  const pretend = useMutation({
+    mutationFn: (providesTags: boolean) =>
+      api.patch<Connection>('/source/connections/fake/capabilities', {
+        provides_tags: providesTags,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connections'] })
+      qc.invalidateQueries({ queryKey: ['tags'] })
+    },
+  })
+
   return (
     <div className="card" style={{ padding: '18px 20px' }}>
       <div className="klabel" style={{ marginBottom: 14 }}>
@@ -58,6 +71,34 @@ export function SourceCard() {
             Отсчёт с {dateTime(active.ingest_from)}: сделки, закрытые раньше, сервис
             не видит. Истории не импортируем — метрики начинаются с этого момента.
           </div>
+          {active.provider === 'fake' && (
+            <div
+              style={{
+                marginTop: 12,
+                paddingTop: 12,
+                borderTop: '1px solid #2b2b27',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+              }}
+            >
+              <button
+                onClick={() => pretend.mutate(!active.capabilities.provides_tags)}
+                disabled={pretend.isPending}
+                className={active.capabilities.provides_tags ? '' : 'primary'}
+                style={{ fontSize: 12, padding: '6px 12px' }}
+              >
+                {active.capabilities.provides_tags
+                  ? 'Изображать источник без тегов'
+                  : 'Вернуть теги источника'}
+              </button>
+              <span className="hint" style={{ flex: 1 }}>
+                Без тегов разметка живёт у нас: нарушения отмечаются кнопками
+                в ленте сделок. Так будет работать Binance.
+              </span>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
             {Object.entries(active.capabilities).map(([key, value]) => (
               <span

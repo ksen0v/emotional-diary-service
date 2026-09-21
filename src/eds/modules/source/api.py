@@ -15,6 +15,18 @@ from eds.platform import auth, db
 router = APIRouter(prefix="/api/v1", tags=["source"])
 
 
+async def _resolve_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Возможности активного источника — для платформы.
+
+    Так модуль trades узнаёт, отдаёт ли источник теги, не импортируя source.
+    """
+    connection = await repo.active_connection(s, user_id)
+    return dict(connection.capabilities) if connection else {}
+
+
+auth.register_source(_resolve_capabilities)
+
+
 class AccountOut(BaseModel):
     id: uuid.UUID
     external_id: str
@@ -141,6 +153,26 @@ async def activate(
     s: AsyncSession = Depends(db.session),
 ) -> ConnectionOut:
     connection = await service.activate(s, user.user_id, connection_id)
+    accounts = await repo.accounts_of(s, connection.id)
+    await s.commit()
+    return _connection_out(connection, accounts)
+
+
+class CapabilitiesIn(BaseModel):
+    provides_tags: bool
+
+
+@router.patch("/source/connections/fake/capabilities", response_model=ConnectionOut)
+async def set_fake_capabilities(
+    body: CapabilitiesIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> ConnectionOut:
+    """Только для тестового источника: изображать источник без тегов."""
+    connection = await service.set_fake_capabilities(
+        s, user.user_id, provides_tags=body.provides_tags
+    )
     accounts = await repo.accounts_of(s, connection.id)
     await s.commit()
     return _connection_out(connection, accounts)

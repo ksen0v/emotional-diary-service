@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eds.contracts import events as ev
 from eds.contracts.ingest import IngestContext, IngestReport
 from eds.contracts.source import IncomingTag, IncomingTrade
-from eds.modules.trades import normalize, repo
+from eds.modules.trades import metrics, normalize, repo
 from eds.modules.trades.models import Trade, TradeTag
 from eds.platform import bus
+from eds.platform.errors import AppError
 
 
 async def ingest_batch(
@@ -197,6 +198,71 @@ def _as_incoming(tag: TradeTag) -> IncomingTag:
     return IncomingTag(
         external_id=tag.external_id, name=tag.name, column_key=tag.column_key
     )
+
+
+async def mark_by_user(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    trade_id: uuid.UUID,
+    marking: str,
+    *,
+    source_provides_tags: bool,
+) -> tuple[Trade, dict]:
+    """Своя разметка сделки.
+
+    Работает только когда активный источник не отдаёт теги (Binance). При TMM
+    разметка живёт в дневнике трейдера, и вторая точка правды здесь означала бы,
+    что одна и та же сделка размечена двумя способами по-разному.
+    """
+    if source_provides_tags:
+        raise AppError(
+            "not_supported_by_source",
+            "Разметка приходит из дневника источника. Поставь тег там — "
+            "сервис увидит его сам.",
+            409,
+        )
+    if marking not in (normalize.MARK_CLEAN, normalize.MARK_VIOLATION):
+        raise AppError(
+            "validation_failed",
+            "Разметка: «по системе» или «нарушение».",
+            400,
+        )
+
+    trade = await repo.by_id(s, user_id, trade_id)
+    if trade is None:
+        raise AppError("not_found", "Сделка не найдена.", 404)
+
+    previous = trade.marking
+    if previous == marking:
+        return trade, {"changed": False}
+
+    trade.marking = marking
+    trade.marked_by = "user"
+    trade.updated_at = dt.datetime.now(dt.UTC)
+    await s.flush()
+
+    await bus.publish(
+        s,
+        ev.TRADES_MARKING_CHANGED,
+        {
+            "user_id": str(user_id),
+            "trade_id": str(trade.id),
+            "trading_day": trade.trading_day.isoformat(),
+            "marking_before": previous,
+            "marking_after": marking,
+            "cause": "user_marking",
+        },
+        dedup_key=f"user-mark:{trade.id}:{trade.updated_at.isoformat()}",
+    )
+    return trade, {"changed": True, "marking_before": previous}
+
+
+async def marking_metrics(
+    s: AsyncSession, user_id: uuid.UUID, days: tuple[dt.date, dt.date] | None
+) -> tuple[metrics.MarkingMetrics, dict]:
+    counts = await repo.marking_counts(s, user_id, days)
+    days_with_trades = await repo.days_count(s, user_id, days)
+    return metrics.compute(**counts), metrics.enough_data(days_with_trades)
 
 
 # --- чтение ---

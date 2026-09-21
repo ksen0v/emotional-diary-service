@@ -66,6 +66,27 @@ class FeedOut(BaseModel):
     period: dict
 
 
+class MarkingIn(BaseModel):
+    marking: str
+
+
+class MarkingEffects(BaseModel):
+    changed: bool
+    marking_before: str | None = None
+
+
+class MarkedOut(BaseModel):
+    trade: TradeOut
+    effects: MarkingEffects
+    metrics: dict
+
+
+class MetricsOut(BaseModel):
+    period: dict
+    marking: dict
+    confidence: dict
+
+
 class CurvePointOut(BaseModel):
     at: dt.datetime
     trade_id: str
@@ -205,6 +226,60 @@ async def day_curve(
                 else Decimal("0")
             ),
         },
+    )
+
+
+@router.get("/trades/metrics", response_model=MetricsOut)
+async def marking_metrics(
+    period: str = Query(default="month", pattern="^(today|week|month|all)$"),
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    s: AsyncSession = Depends(db.session),
+) -> MetricsOut:
+    """Метрики разметки за период: покрытие, дисциплина, цена эмоций."""
+    today = _today(prefs)
+    days = service.period_days(period, today)
+    computed, confidence = await service.marking_metrics(s, user.user_id, days)
+    return MetricsOut(
+        period={
+            "level": period,
+            "from": days[0].isoformat() if days else None,
+            "to": days[1].isoformat() if days else None,
+            "today": today.isoformat(),
+        },
+        marking=computed.as_dict(),
+        confidence=confidence,
+    )
+
+
+@router.put("/trades/{trade_id}/marking", response_model=MarkedOut)
+async def mark(
+    trade_id: uuid.UUID,
+    body: MarkingIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> MarkedOut:
+    """Своя разметка сделки — когда источник не отдаёт теги.
+
+    Возможности источника спрашиваем через платформу: модуль trades не должен
+    знать, что модуль source вообще существует.
+    """
+    provides_tags = await auth.source_provides_tags(s, user.user_id)
+    trade, effects = await service.mark_by_user(
+        s, user.user_id, trade_id, body.marking, source_provides_tags=provides_tags
+    )
+    computed, _confidence = await service.marking_metrics(
+        s, user.user_id, service.period_days("month", _today(prefs))
+    )
+    await s.commit()
+
+    tags = await repo.tags_of(s, [trade.id])
+    return MarkedOut(
+        trade=_trade_out(trade, tags.get(trade.id, [])),
+        effects=MarkingEffects(**effects),
+        metrics=computed.as_dict(),
     )
 
 

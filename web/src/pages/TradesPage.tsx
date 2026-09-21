@@ -1,11 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api } from '../lib/api'
-import type { Curve, Feed, Trade } from '../lib/types'
+import type { Curve, Feed, MarkedOut, MarkingMetrics, Trade } from '../lib/types'
 import { DayCurve } from '../ui/DayCurve'
 import { DevPanel } from '../ui/DevPanel'
 import { useConnections } from '../ui/SourceCard'
-import { TagMapping } from '../ui/TagMapping'
 import { MARKING, duration, money, pct, pnlColor, time } from '../ui/format'
 
 const PERIODS = [
@@ -28,6 +27,11 @@ export function TradesPage() {
   const hasSource = Boolean(
     connections.data?.connections.some((c) => c.is_active),
   )
+  const qc = useQueryClient()
+  const provideTags = Boolean(
+    connections.data?.connections.find((c) => c.is_active)?.capabilities
+      .provides_tags,
+  )
   const [period, setPeriod] = useState<Period>('today')
   const [filter, setFilter] = useState<Filter>('all')
   const [cursor, setCursor] = useState<string | null>(null)
@@ -39,6 +43,21 @@ export function TradesPage() {
       const params = new URLSearchParams({ period, filter, limit: '50' })
       if (cursor) params.set('cursor', cursor)
       return api.get<Feed>(`/trades?${params.toString()}`)
+    },
+  })
+
+  const metrics = useQuery<MarkingMetrics>({
+    queryKey: ['marking-metrics', period],
+    queryFn: () => api.get<MarkingMetrics>(`/trades/metrics?period=${period}`),
+    enabled: hasSource,
+  })
+
+  const mark = useMutation({
+    mutationFn: (args: { id: string; marking: string }) =>
+      api.put<MarkedOut>(`/trades/${args.id}/marking`, { marking: args.marking }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['trades'] })
+      qc.invalidateQueries({ queryKey: ['marking-metrics'] })
     },
   })
 
@@ -70,7 +89,6 @@ export function TradesPage() {
       )}
 
       {hasSource && <DevPanel />}
-      {hasSource && <TagMapping />}
 
       {period === 'today' && curve.data && <DayCurve curve={curve.data} />}
 
@@ -128,17 +146,61 @@ export function TradesPage() {
         </div>
       )}
 
+      {metrics.data && (
+        <div
+          className="card"
+          style={{ padding: '14px 18px', display: 'flex', gap: 26, flexWrap: 'wrap' }}
+        >
+          <Stat
+            label="Дисциплина"
+            value={
+              metrics.data.marking.discipline_pct === null
+                ? '—'
+                : `${Number(metrics.data.marking.discipline_pct).toFixed(0)}%`
+            }
+          />
+          <Stat
+            label="Цена эмоций"
+            value={money(metrics.data.marking.emotion_cost_usd)}
+            color={pnlColor(metrics.data.marking.emotion_cost_usd)}
+          />
+          {metrics.data.marking.violations.profitable > 0 && (
+            <Stat
+              label="Нарушения в плюс"
+              value={String(metrics.data.marking.violations.profitable)}
+              color="var(--warn)"
+            />
+          )}
+          {!metrics.data.confidence.enough_data && (
+            <div className="hint" style={{ alignSelf: 'center', maxWidth: 320 }}>
+              Мало данных: {metrics.data.confidence.days_available} торговых дней
+              из {metrics.data.confidence.days_required}. Выводы делать рано.
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card" style={{ padding: '4px 0' }}>
         {feed.isLoading && <div className="hint" style={{ padding: 16 }}>загрузка…</div>}
         {!feed.isLoading && items.length === 0 && (
           <div className="hint" style={{ padding: 16 }}>
             {filter === 'violations'
-              ? 'Нарушений за период нет. Нарушением считается сделка с тегом, который ты отметил как нарушение.'
+              ? 'Нарушений за период нет. Нарушением становится сделка, которую ты '
+                + 'отметил сам или у которой стоит тег, отмеченный как нарушение.'
               : 'Сделок за период нет.'}
           </div>
         )}
         {items.map((trade) => (
-          <Row key={trade.id} trade={trade} />
+          <Row
+            key={trade.id}
+            trade={trade}
+            onMark={
+              provideTags
+                ? undefined
+                : (marking) => mark.mutate({ id: trade.id, marking })
+            }
+            busy={mark.isPending}
+          />
         ))}
       </div>
 
@@ -178,7 +240,15 @@ function Stat({
   )
 }
 
-function Row({ trade }: { trade: Trade }) {
+function Row({
+  trade,
+  onMark,
+  busy,
+}: {
+  trade: Trade
+  onMark?: (marking: string) => void
+  busy?: boolean
+}) {
   const mark = MARKING[trade.marking]
   return (
     <div
@@ -241,9 +311,40 @@ function Row({ trade }: { trade: Trade }) {
           {tag.name}
         </span>
       ))}
-      <span style={{ color: mark.color, width: 110, textAlign: 'right' }}>
-        {mark.label}
-      </span>
+      {onMark ? (
+        <div style={{ display: 'flex', gap: 6, width: 190, justifyContent: 'flex-end' }}>
+          <button
+            onClick={() => onMark('clean')}
+            disabled={busy}
+            aria-pressed={trade.marking === 'clean'}
+            style={{
+              fontSize: 11,
+              padding: '4px 10px',
+              color: trade.marking === 'clean' ? 'var(--ok)' : 'var(--faint)',
+              borderColor: trade.marking === 'clean' ? '#2f4a38' : 'var(--line-2)',
+            }}
+          >
+            по системе
+          </button>
+          <button
+            onClick={() => onMark('violation')}
+            disabled={busy}
+            aria-pressed={trade.marking === 'violation'}
+            style={{
+              fontSize: 11,
+              padding: '4px 10px',
+              color: trade.marking === 'violation' ? 'var(--bad)' : 'var(--faint)',
+              borderColor: trade.marking === 'violation' ? '#5a3a34' : 'var(--line-2)',
+            }}
+          >
+            нарушение
+          </button>
+        </div>
+      ) : (
+        <span style={{ color: mark.color, width: 110, textAlign: 'right' }}>
+          {mark.label}
+        </span>
+      )}
     </div>
   )
 }

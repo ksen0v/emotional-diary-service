@@ -57,6 +57,29 @@ async def activate(s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID
     return await repo.activate(s, connection)
 
 
+async def set_fake_capabilities(
+    s: AsyncSession, user_id: uuid.UUID, *, provides_tags: bool
+) -> Connection:
+    """Заставить фейковый источник изображать источник без тегов.
+
+    Нужно, чтобы своя разметка проверялась до появления Binance: у него тегов нет,
+    и разметка живёт у нас. Работает только для фейка — настоящему источнику
+    возможности не переписать, они его свойство, а не настройка.
+    """
+    connection = await repo.active_connection(s, user_id)
+    if connection is None or connection.provider != "fake":
+        raise AppError(
+            "no_fake_source",
+            "Возможности можно менять только у тестового источника.",
+            409,
+        )
+    caps = dict(connection.capabilities)
+    caps["provides_tags"] = provides_tags
+    connection.capabilities = caps
+    await s.flush()
+    return connection
+
+
 async def set_violation_tags(
     s: AsyncSession, user_id: uuid.UUID, tag_ids: list[str]
 ) -> int:
@@ -123,6 +146,11 @@ async def push_fake_trade(
             "Сделка закрыта раньше момента подключения — сервис такие не принимает.",
             UNPROCESSABLE,
         )
+
+    # Источник без тегов не может их прислать. Отбрасываем здесь, а не в приёме:
+    # приём должен видеть ровно то, что отдал бы настоящий источник.
+    if not connection.capabilities.get("provides_tags", True):
+        tags = []
 
     counter = await repo.fake_feed_size(s, connection.id)
     payload = {
