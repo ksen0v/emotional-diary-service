@@ -18,8 +18,13 @@ Python 3.12 + FastAPI · PostgreSQL 16 · SQLAlchemy 2 (async) · Alembic ·
 
 ```
 copy .env.example .env      # Windows; на unix: cp .env.example .env
-docker compose up --build
+docker compose up -d --build
+docker compose ps           # три строки со статусом Up
 ```
+
+`-d` обязателен по практической причине: без него `docker compose up` держит
+терминал и гасит весь стек, как только его закрыть или прервать. Сервис после
+этого выглядит как «localhost refused to connect», хотя всё было настроено верно.
 
 Дальше:
 
@@ -27,8 +32,13 @@ docker compose up --build
 - <http://localhost:8000> — страница состояния сервиса
 - <http://localhost:8000/docs> — документация API
 
-Остановить: `Ctrl+C`, затем `docker compose down`.
+Логи: `docker compose logs -f api` или `docker compose logs -f web`.
+Помни, что `logs` показывает и остановленные контейнеры, а `ps` — только живые:
+если `logs` что-то пишет, а `ps` пуст, значит стек уже погас.
+
+Остановить: `docker compose down`.
 Стереть базу и начать с нуля: `docker compose down -v`.
+Пересобрать после правок зависимостей: `docker compose up -d --build`.
 
 ## Что уже работает
 

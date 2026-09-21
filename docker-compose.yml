@@ -43,10 +43,10 @@ services:
     ports:
       - "5173:5173"
     volumes:
-      - ./web/src:/app/src
-      - ./web/index.html:/app/index.html
-      - ./web/vite.config.ts:/app/vite.config.ts
-      - ./web/tsconfig.json:/app/tsconfig.json
+      # Папка целиком: монтирование отдельных файлов на Windows ненадёжно.
+      - ./web:/app
+      # node_modules берём из образа, а не с хоста: на хосте их нет.
+      - /app/node_modules
 
 volumes:
   pgdata:
