@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../lib/api'
 import type { Curve, Feed, MarkingMetrics, Today } from '../lib/types'
 import { DayCurve } from '../ui/DayCurve'
+import { EntryEditor } from '../ui/EntryEditor'
 import { Stub } from '../ui/Stub'
 import { duration, money, pct, pnlColor, time } from '../ui/format'
 
@@ -26,10 +27,37 @@ export function TodayPage() {
   if (!today.data) {
     return <div className="err">Не удалось получить состояние дня.</div>
   }
+  if (today.data.state === 'review_pending') {
+    return <ReviewPending today={today.data} />
+  }
   if (today.data.state === 'check_failed') {
     return <NoAdmission today={today.data} />
   }
   return <DayScreen today={today.data} />
+}
+
+// Э-08: перекрытие «разбор за вчера не заполнен». Одна кнопка, других путей нет.
+// Жёсткость сознательная (ОВ-15): разбор — условие следующей сессии.
+function ReviewPending({ today }: { today: Today }) {
+  const navigate = useNavigate()
+  const day = today.review.pending_day
+  return (
+    <div style={{ maxWidth: 520, paddingTop: 50, textAlign: 'center', margin: '0 auto' }}>
+      <div style={{ fontSize: 19, marginBottom: 14 }}>
+        Разбор за{' '}
+        {day
+          ? new Date(day).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
+          : 'прошлый день'}{' '}
+        не заполнен
+      </div>
+      <div className="hint" style={{ marginBottom: 26, lineHeight: 1.8 }}>
+        Пока он не заполнен, чек готовности недоступен.
+      </div>
+      <button className="primary" onClick={() => navigate(`/review/${day}`)}>
+        Заполнить разбор
+      </button>
+    </div>
+  )
 }
 
 // Э-06: перекрытие «нет допуска». Полный экран, без выхода в работу.
@@ -102,6 +130,7 @@ function DayScreen({ today }: { today: Today }) {
         now={now}
         onCheck={() => navigate('/premarket')}
         onClose={() => closeSession.mutate()}
+        onReview={() => navigate(`/review/${today.day}`)}
         closing={closeSession.isPending}
         closeError={closeError}
       />
@@ -234,11 +263,7 @@ function DayScreen({ today }: { today: Today }) {
           </div>
         </div>
 
-        <Stub
-          title="Запись за день"
-          step={6}
-          what="Оценка, статус, ментальные теги и текст о состоянии дня."
-        />
+        <EntryEditor level="day" periodStart={today.day} entry={today.entry} />
       </div>
     </div>
   )
@@ -255,6 +280,7 @@ function StatusBlock({
   now,
   onCheck,
   onClose,
+  onReview,
   closing,
   closeError,
 }: {
@@ -262,6 +288,7 @@ function StatusBlock({
   now: Date
   onCheck: () => void
   onClose: () => void
+  onReview: () => void
   closing: boolean
   closeError: string
 }) {
@@ -315,8 +342,21 @@ function StatusBlock({
         <div className="hint" style={{ marginTop: 10 }}>
           Итог дня: {money(today.counters.profit_usd)} ·{' '}
           {today.counters.all_trades} сделок · нарушений {today.counters.violations}.
-          Пост-сессионный разбор появится на шаге 6 — пока день просто закрыт.
         </div>
+        {today.review.state === 'pending' ? (
+          <div style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button className="primary" onClick={onReview} style={{ fontSize: 12, padding: '6px 12px' }}>
+              Заполнить разбор
+            </button>
+            <span className="hint">
+              Без разбора завтрашний чек не даётся. Лучше сегодня, пока помнишь.
+            </span>
+          </div>
+        ) : (
+          <div className="hint" style={{ marginTop: 10 }}>
+            Разбор за этот день заполнен.
+          </div>
+        )}
       </div>
     )
   }

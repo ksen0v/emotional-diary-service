@@ -124,27 +124,42 @@ async def test_check_cannot_be_retaken(app_client) -> None:
 async def test_unclosed_review_blocks_the_check(app_client, factory) -> None:
     """Не разобрал вчера — нет допуска сегодня (ТЗ 5.4).
 
-    Разбор появится на шаге 6, поэтому состояние выставляется напрямую:
-    запрет должен работать уже сейчас, иначе на шаге 6 он окажется ненаписанным.
+    Разбор именно за прошедший день: за сегодня он появляется только после
+    закрытия сессии, то есть когда чек уже пройден и мешать ему не может.
     """
     await setup(app_client)
     uid = await user_id(app_client)
     body = await today(app_client)
+    yesterday = dt.date.fromisoformat(body["day"]) - dt.timedelta(days=1)
 
     async with factory() as s:
         await s.execute(
             text(
-                "INSERT INTO daybook.trading_days (user_id, day, review_state) "
-                "VALUES (:uid, :day, 'pending') "
-                "ON CONFLICT (user_id, day) DO UPDATE SET review_state = 'pending'"
+                "INSERT INTO daybook.trading_days "
+                "(user_id, day, admission, check_score, session_opened_at, "
+                " session_closed_at, review_state) "
+                "VALUES (:uid, :day, 'green', 21, :opened, :closed, 'pending')"
             ),
-            {"uid": uid, "day": dt.date.fromisoformat(body["day"])},
+            {
+                "uid": uid,
+                "day": yesterday,
+                "opened": dt.datetime.now(dt.UTC) - dt.timedelta(days=1),
+                "closed": dt.datetime.now(dt.UTC) - dt.timedelta(hours=12),
+            },
         )
         await s.commit()
 
     res = await check(app_client, BEST)
     assert res.status_code == 409
-    assert res.json()["error"]["code"] == "review_pending"
+    error = res.json()["error"]
+    assert error["code"] == "review_pending"
+    # День назван: «заполни разбор» без даты — задача без адреса.
+    assert error["details"]["day"] == yesterday.isoformat()
+
+    state = await today(app_client)
+    assert state["state"] == "review_pending"
+    assert state["review"]["pending_day"] == yesterday.isoformat()
+    assert state["review"]["required_for_next_session"] is True
 
 
 async def test_questions_come_from_the_server(app_client) -> None:

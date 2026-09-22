@@ -11,6 +11,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.contracts.trading_time import day_ends_at, trading_day
+from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
 from eds.modules.source import repo as source_repo
@@ -40,8 +41,12 @@ async def build(
     day_row = await daybook_repo.day_of(s, user_id, day)
     check_row = await daybook_repo.check_of(s, user_id, day)
     counters = await trades_service.day_counters(s, user_id, day)
+    pending_day = await daybook.pending_review(s, user_id, day)
+    entry_row = await daybook_repo.entry_of(s, user_id, periods.DAY, day)
 
-    state = daybook.state_of(day_row, has_source=connection is not None)
+    state = daybook.state_of(
+        day_row, has_source=connection is not None, pending_review_day=pending_day
+    )
 
     return {
         "day": day,
@@ -56,17 +61,27 @@ async def build(
             "opened_at": day_row.session_opened_at if day_row else None,
             "closed_at": day_row.session_closed_at if day_row else None,
         },
-        # Блокировки — шаг 9, дневная запись и разбор — шаг 6, стрик — шаг 7.
-        # null здесь означает «этого ещё нет в сервисе», и фронт по нему
-        # показывает заглушку вместо пустого блока с нулями.
+        # Блокировки — шаг 9, стрик — шаг 7. null здесь означает «этого ещё
+        # нет в сервисе», и фронт по нему показывает заглушку вместо пустого
+        # блока с нулями.
         "lock": None,
-        "entry": None,
         "streak": None,
+        "entry": (
+            None
+            if entry_row is None
+            else daybook.entry_out(
+                entry_row,
+                (await daybook_repo.tags_of(s, [entry_row.id])).get(entry_row.id, []),
+                (await daybook_repo.comments_of(s, [entry_row.id])).get(entry_row.id, []),
+            )
+        ),
         "review": {
             "state": day_row.review_state if day_row else "none",
-            "required_for_next_session": bool(
-                day_row and day_row.review_state == "pending"
-            ),
+            # Разбор за прошедший день не даёт пройти новый чек (ТЗ 5.4).
+            # Показываем именно этот день: «заполни разбор» без даты — задача
+            # без адреса, особенно если пропущено больше одного дня.
+            "pending_day": pending_day.isoformat() if pending_day else None,
+            "required_for_next_session": pending_day is not None,
         },
         "counters": counters,
         "source": await _source_block(s, connection),

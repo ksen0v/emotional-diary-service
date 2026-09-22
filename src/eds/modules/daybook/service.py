@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.contracts import events as ev
 from eds.contracts.trading_time import day_bounds
-from eds.modules.daybook import questions, repo
+from eds.modules.daybook import periods, presets, questions, repo
 from eds.modules.daybook.models import TradingDay
 from eds.platform import bus
 from eds.platform.errors import UNPROCESSABLE, AppError
@@ -23,14 +23,25 @@ GREEN = "green"
 RED = "red"
 DENIED = "denied"
 
-# Состояния дня из дизайна (машина состояний, §2). locked и review_pending
-# появятся вместе с блокировками (шаг 9) и разбором (шаг 6): пока их некому
-# выставить, и возвращать их было бы обещанием, которого сервис не выполняет.
+# Состояния дня из дизайна (машина состояний, §2). locked появится вместе
+# с блокировками (шаг 9): пока его некому выставить, и возвращать его было бы
+# обещанием, которого сервис не выполняет.
 STATE_NO_SOURCE = "no_source"
 STATE_NO_CHECK = "no_check"
 STATE_CHECK_FAILED = "check_failed"
 STATE_TRADING = "trading"
 STATE_SESSION_CLOSED = "session_closed"
+STATE_REVIEW_PENDING = "review_pending"
+
+MONTHS_GENITIVE = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def human_date(day: dt.date) -> str:
+    """Дата словами — для текстов, которые читает трейдер."""
+    return f"{day.day} {MONTHS_GENITIVE[day.month - 1]}"
 
 
 def verdict_of(score: int, pass_score: int, min_score: int) -> str:
@@ -42,12 +53,22 @@ def verdict_of(score: int, pass_score: int, min_score: int) -> str:
     return DENIED
 
 
-def state_of(day: TradingDay | None, *, has_source: bool) -> str:
+def state_of(
+    day: TradingDay | None,
+    *,
+    has_source: bool,
+    pending_review_day: dt.date | None = None,
+) -> str:
     """Состояние дня — одно слово, по которому фронт выбирает экран.
 
     Считает сервер: правила переходов — часть предметной логики, и
     продублированные во фронте они разойдутся при первой правке.
+
+    Незакрытый разбор стоит первым сознательно: пока он не заполнен, других
+    путей нет — ни чека, ни работы. Жёсткость в этом и есть смысл (ОВ-15).
     """
+    if pending_review_day is not None:
+        return STATE_REVIEW_PENDING
     if not has_source:
         return STATE_NO_SOURCE
     if day is None or day.admission is None:
@@ -118,15 +139,21 @@ async def submit(
     min_score: int,
 ) -> dict:
     answers = validate_answers(raw_answers)
-    row = await repo.ensure_day(s, user_id, day)
 
-    if row.review_state == "pending":
-        # Не разобрал вчера — нет допуска сегодня (ТЗ 5.4).
+    # Не разобрал вчера — нет допуска сегодня (ТЗ 5.4). Смотрим на прошедшие
+    # дни, а не на сегодняшний: разбор за сегодня появляется только после
+    # закрытия сессии, то есть когда чек уже пройден и мешать ему не может.
+    blocked = await pending_review(s, user_id, day)
+    if blocked is not None:
         raise AppError(
             "review_pending",
-            "Разбор за прошлую сессию не закрыт. Допуск не выдаётся, пока он не закрыт.",
+            f"Разбор за {human_date(blocked)} не заполнен. "
+            "Допуск не выдаётся, пока он не закрыт.",
             409,
+            {"day": blocked.isoformat()},
         )
+
+    row = await repo.ensure_day(s, user_id, day)
     if row.admission is not None:
         raise AppError(
             "already_done",
@@ -270,9 +297,11 @@ async def _close(
     reason: str,
 ) -> TradingDay:
     row.session_closed_at = at
-    # Разбор ставится в pending на шаге 6 — вместе с формой, которой его можно
-    # закрыть. Ставить его сейчас значило бы запереть трейдера: незакрытый
-    # разбор не даёт пройти чек, а закрыть его пока нечем.
+    # Сессия закрылась — разбор становится задачей, которая ждёт трейдера
+    # (ТЗ 5.4). Ночью он не показывается: до следующего чека времени хватает,
+    # а разбуженный разбор в три часа ночи никто не заполняет.
+    if row.review_state == "none":
+        row.review_state = "pending"
     await s.flush()
     await bus.publish(
         s,
@@ -296,4 +325,239 @@ def admission_out(row: TradingDay | None, check_at: dt.datetime | None) -> dict 
         "verdict": row.admission,
         "score": row.check_score,
         "checked_at": check_at,
+    }
+
+
+# --- дневник ---
+
+EntryOut = tuple["object", list[str], list["object"]]
+
+
+def _clean_text(value: str | None, limit: int, field: str) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > limit:
+        raise AppError(
+            "validation_failed", f"{field}: слишком длинный текст.", UNPROCESSABLE
+        )
+    return text
+
+
+def _clean_tags(tags: list[str] | None) -> list[str]:
+    """Теги — свободный текст, но без дублей и мусора.
+
+    Пресеты сервис предлагает и не ограничивает ими: словарь состояний
+    у каждого свой, а справочник превратил бы «допиши своё» в правку схемы.
+    """
+    if not tags:
+        return []
+    seen: list[str] = []
+    for raw in tags:
+        tag = raw.strip()
+        if not tag:
+            continue
+        if len(tag) > presets.MAX_TAG_LENGTH:
+            raise AppError(
+                "validation_failed", "Тег слишком длинный.", UNPROCESSABLE
+            )
+        if tag not in seen:
+            seen.append(tag)
+    if len(seen) > presets.MAX_TAGS:
+        raise AppError(
+            "validation_failed",
+            f"Тегов не больше {presets.MAX_TAGS}.",
+            UNPROCESSABLE,
+        )
+    return seen
+
+
+async def upsert_entry(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    level: str,
+    period_start: dt.date,
+    *,
+    score: int | None,
+    status: str | None,
+    tags: list[str] | None,
+    body: str | None,
+    timezone: str,
+    cutoff: dt.time,
+    today: dt.date,
+):
+    """Создать или обновить запись дневника.
+
+    Через 48 часов после конца периода правка закрывается и остаётся только
+    комментарий (ТЗ 9.2). Это не техническое ограничение, а смысл дневника:
+    запись должна остаться тем, что трейдер думал тогда, а не тем, что он
+    думает об этом сейчас.
+    """
+    periods.check_level(level)
+    start, end = periods.bounds(level, period_start)
+
+    if start > today:
+        raise AppError(
+            "period_in_future",
+            "Запись за будущий период не имеет смысла.",
+            UNPROCESSABLE,
+        )
+    if score is not None and not 1 <= score <= 5:
+        raise AppError("validation_failed", "Оценка — от 1 до 5.", UNPROCESSABLE)
+
+    row = await repo.entry_of(s, user_id, level, start)
+    if row is None:
+        row = await repo.create_entry(
+            s,
+            user_id,
+            level=level,
+            period_start=start,
+            period_end=end,
+            editable_until=periods.editable_until(level, start, timezone, cutoff),
+        )
+    elif dt.datetime.now(dt.UTC) > row.editable_until:
+        raise AppError(
+            "not_editable",
+            "Запись старше 48 часов. Добавь комментарий.",
+            409,
+            {"comments_url": f"/api/v1/entries/{row.id}/comments"},
+        )
+
+    row.score = score
+    row.status = _clean_text(status, presets.MAX_STATUS_LENGTH, "Статус")
+    row.body = _clean_text(body, presets.MAX_BODY_LENGTH, "Текст записи")
+    row.updated_at = dt.datetime.now(dt.UTC)
+    await s.flush()
+    await repo.replace_tags(s, row.id, _clean_tags(tags))
+    return row
+
+
+async def comment_entry(
+    s: AsyncSession, user_id: uuid.UUID, entry_id: uuid.UUID, body: str
+):
+    """Дописать комментарий. Времени не ограничен и не редактируется (ТЗ 9.2)."""
+    row = await repo.entry_by_id(s, user_id, entry_id)
+    if row is None:
+        raise AppError("not_found", "Запись не найдена.", 404)
+    text = _clean_text(body, presets.MAX_COMMENT_LENGTH, "Комментарий")
+    if text is None:
+        raise AppError("validation_failed", "Комментарий пустой.", 400)
+    return await repo.add_comment(s, row.id, text)
+
+
+def entry_out(row, tags: list[str], comments: list) -> dict:
+    now = dt.datetime.now(dt.UTC)
+    return {
+        "id": str(row.id),
+        "level": row.level,
+        "period_start": row.period_start.isoformat(),
+        "period_end": row.period_end.isoformat(),
+        "score": row.score,
+        "status": row.status,
+        "tags": tags,
+        "body": row.body,
+        "editable_until": row.editable_until.isoformat(),
+        "editable": now <= row.editable_until,
+        "comments": [
+            {
+                "id": str(c.id),
+                "body": c.body,
+                "created_at": c.created_at.isoformat(),
+            }
+            for c in comments
+        ],
+    }
+
+
+# --- пост-сессионный разбор ---
+
+PLAN_ANSWERS = ("yes", "partial", "no")
+
+
+async def pending_review(
+    s: AsyncSession, user_id: uuid.UUID, today: dt.date
+) -> dt.date | None:
+    """День, за который разбор не закрыт. Он блокирует новый чек (ТЗ 5.4)."""
+    row = await repo.oldest_pending_review(s, user_id, before=today)
+    return row.day if row else None
+
+
+async def submit_review(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    day: dt.date,
+    *,
+    plan_followed: str,
+    pull_text: str | None,
+    execution_score: int | None,
+    takeaway: str | None,
+):
+    """Заполнить разбор за день.
+
+    Разбор возможен только по закрытому дню: пока сессия идёт, разбирать нечего,
+    а «разбор в середине дня» стал бы способом снять блокировку разбором заранее.
+    """
+    if plan_followed not in PLAN_ANSWERS:
+        raise AppError(
+            "validation_failed", "План: да, частично или нет.", UNPROCESSABLE
+        )
+    if execution_score is not None and not 1 <= execution_score <= 5:
+        raise AppError(
+            "validation_failed", "Оценка исполнения — от 1 до 5.", UNPROCESSABLE
+        )
+
+    row = await repo.day_of(s, user_id, day)
+    if row is None or row.session_opened_at is None:
+        raise AppError(
+            "no_session",
+            "В этот день сессия не открывалась — разбирать нечего.",
+            UNPROCESSABLE,
+        )
+    if row.session_closed_at is None:
+        raise AppError(
+            "day_not_closed",
+            "День ещё идёт. Разбор заполняется после закрытия сессии.",
+            UNPROCESSABLE,
+        )
+    if await repo.review_of(s, user_id, day) is not None:
+        raise AppError("already_done", "Разбор за этот день уже заполнен.", 409)
+
+    review = await repo.save_review(
+        s,
+        user_id,
+        day,
+        plan_followed=plan_followed,
+        pull_text=_clean_text(pull_text, presets.MAX_COMMENT_LENGTH, "Что дёрнуло"),
+        execution_score=execution_score,
+        takeaway=_clean_text(takeaway, presets.MAX_COMMENT_LENGTH, "Вывод"),
+    )
+    row.review_state = "done"
+    await s.flush()
+
+    await bus.publish(
+        s,
+        ev.DAYBOOK_REVIEW_COMPLETED,
+        {
+            "user_id": str(user_id),
+            "day": day.isoformat(),
+            "plan_followed": plan_followed,
+            "execution_score": execution_score,
+        },
+        dedup_key=f"review:{user_id}:{day.isoformat()}",
+    )
+    return review
+
+
+def review_out(row) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "day": row.day.isoformat(),
+        "plan_followed": row.plan_followed,
+        "pull_text": row.pull_text,
+        "execution_score": row.execution_score,
+        "takeaway": row.takeaway,
+        "created_at": row.created_at.isoformat(),
     }

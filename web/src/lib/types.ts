@@ -249,6 +249,7 @@ export type DayState =
   | 'check_failed'
   | 'trading'
   | 'session_closed'
+  | 'review_pending'
 
 export type Today = {
   day: string
@@ -259,9 +260,13 @@ export type Today = {
   admission: Admission | null
   session: { opened_at: string | null; closed_at: string | null }
   lock: null
-  entry: null
   streak: null
-  review: { state: string; required_for_next_session: boolean }
+  entry: DiaryEntry | null
+  review: {
+    state: string
+    pending_day: string | null
+    required_for_next_session: boolean
+  }
   counters: DayCounters
   source: TodaySource | null
   attention: { code: string; count: number; message: string }[]
@@ -297,4 +302,89 @@ export type CheckResult = {
   message: string
   restrictions: { text: string; note: string } | null
   weak: { id: string; short: string; points: number; max: number }[]
+}
+
+// --- дневник и разбор (Архитектура ч.2 §3.5) ---
+
+export type EntryComment = { id: string; body: string; created_at: string }
+
+export type DiaryEntry = {
+  id: string
+  level: 'day' | 'week' | 'month'
+  period_start: string
+  period_end: string
+  score: number | null
+  status: string | null
+  tags: string[]
+  body: string | null
+  editable_until: string
+  editable: boolean
+  comments: EntryComment[]
+}
+
+// Факты дня для клетки календаря.
+export type DayFacts = {
+  trades: number
+  violations: number
+  unmarked: number
+  profit_usd: string
+  account_return_pct: string
+  admission: 'green' | 'red' | 'denied' | null
+  check_score: number | null
+  review_state: string
+  counted_in_streak: boolean | null
+}
+
+// Факты недели и месяца — метрики из ТЗ 5.1.
+export type PeriodFacts = {
+  trades: number
+  significant_trades: number
+  violations: number
+  unmarked: number
+  profit_usd: string
+  account_return_pct: string
+  coverage_pct: string
+  discipline_pct: string | null
+  emotion_cost_usd: string
+  lost_on_emotions_usd: string
+  violations_profitable: number
+  violations_gain_usd: string
+  days_without_admission: number
+  days_with_trades: number
+  lock_compliance_pct: string | null
+  counted_in_streak: boolean | null
+  confidence: { enough_data: boolean; days_available: number; days_required: number }
+}
+
+export type DiaryItem = {
+  level: 'day' | 'week' | 'month'
+  period_start: string
+  period_end: string
+  entry: DiaryEntry | null
+  facts: DayFacts & Partial<PeriodFacts>
+}
+
+export type DiaryList = {
+  level: 'day' | 'week' | 'month'
+  from: string
+  to: string
+  items: DiaryItem[]
+}
+
+export type DiaryPresets = { statuses: string[]; tags: string[] }
+
+export type Review = {
+  day: string
+  plan_followed: 'yes' | 'partial' | 'no'
+  pull_text: string | null
+  execution_score: number | null
+  takeaway: string | null
+  created_at: string
+}
+
+export type ReviewState = {
+  day: string
+  review: Review | null
+  state: string
+  session_closed_at: string | null
 }

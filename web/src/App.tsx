@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useMe } from './lib/auth'
+import { DiaryPage } from './pages/DiaryPage'
 import { Login } from './pages/Login'
 import { PremarketPage } from './pages/PremarketPage'
+import { ReviewPage } from './pages/ReviewPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TodayPage } from './pages/TodayPage'
 import { TradesPage } from './pages/TradesPage'
@@ -41,10 +43,8 @@ export function App() {
 <TradesPage />
           }
         />
-        <Route
-          path="/diary"
-          element={<Stub title="Дневник" step={6} what="Записи за день, неделю и месяц." />}
-        />
+        <Route path="/diary" element={<DiaryPage />} />
+        <Route path="/review/:day" element={<ReviewPage />} />
         <Route
           path="/incidents"
           element={

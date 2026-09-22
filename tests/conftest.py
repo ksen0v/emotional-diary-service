@@ -62,6 +62,12 @@ WIPE = (
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM daybook.entry_tags WHERE entry_id IN ("
+    " SELECT id FROM daybook.entries WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM daybook.entry_comments WHERE entry_id IN ("
+    " SELECT id FROM daybook.entries WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM daybook.entries WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM daybook.session_reviews WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM daybook.premarket_checks WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM daybook.trading_days WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM identity.users WHERE email LIKE '%@edstest.net'",

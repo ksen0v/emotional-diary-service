@@ -191,6 +191,21 @@ async def marking_counts(
             func.coalesce(
                 func.sum(base.c.profit_usd).filter(base.c.marking == "violation"), 0
             ),
+            # «Слито на эмоциях» и «нарушений в плюс» — две разные суммы,
+            # а не одна со знаком: прибыльное нарушение подкрепляет поведение
+            # и опаснее убыточного, поэтому его нельзя прятать в сальдо (ТЗ 5.1).
+            func.coalesce(
+                func.sum(base.c.profit_usd).filter(
+                    (base.c.marking == "violation") & (base.c.profit_usd < 0)
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(base.c.profit_usd).filter(
+                    (base.c.marking == "violation") & (base.c.profit_usd > 0)
+                ),
+                0,
+            ),
         ).select_from(base)
     )
     (
@@ -201,6 +216,8 @@ async def marking_counts(
         unmarked,
         violations_profitable,
         violations_profit_sum,
+        violations_loss_sum,
+        violations_gain_sum,
     ) = res.one()
     return {
         "trades_all": trades_all,
@@ -210,6 +227,8 @@ async def marking_counts(
         "unmarked": unmarked,
         "violations_profitable": violations_profitable,
         "violations_profit_sum": Decimal(violations_profit_sum),
+        "violations_loss_sum": Decimal(violations_loss_sum),
+        "violations_gain_sum": Decimal(violations_gain_sum),
     }
 
 
@@ -238,3 +257,41 @@ async def day_returns(
         .order_by(Trade.close_time, Trade.id)
     )
     return [(row[0], row[1]) for row in res]
+
+
+async def day_summaries(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.date, until: dt.date
+) -> dict[dt.date, dict]:
+    """Итоги каждого дня в диапазоне — для календаря дневника.
+
+    Одним запросом с группировкой, а не выборкой сделок: календарь месяца
+    это тридцать дней, и тянуть все сделки месяца ради трёх чисел на клетку
+    означало бы платить за экран, который открывают чаще остальных.
+    """
+    res = await s.execute(
+        select(
+            Trade.trading_day,
+            func.count(),
+            func.count().filter(Trade.marking == "violation"),
+            func.count().filter(Trade.marking == "unreviewed"),
+            func.coalesce(func.sum(Trade.profit_usd), 0),
+            func.coalesce(func.sum(Trade.account_return_pct), 0),
+        )
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day >= since,
+            Trade.trading_day <= until,
+        )
+        .group_by(Trade.trading_day)
+        .order_by(Trade.trading_day)
+    )
+    return {
+        row[0]: {
+            "trades": row[1],
+            "violations": row[2],
+            "unmarked": row[3],
+            "profit_usd": Decimal(row[4]),
+            "account_return_pct": Decimal(row[5]),
+        }
+        for row in res
+    }

@@ -13,6 +13,10 @@
 **Цена эмоций** — сумма результата по сделкам-нарушениям. Отдельно считаются
 нарушения в плюс: нарушение остаётся нарушением, даже если принесло деньги,
 и именно эта цифра ломает логику «получилось же — значит можно».
+
+**Слито на эмоциях** — только убыточные нарушения. Отдельно от цены эмоций,
+потому что сальдо прячет и то и другое: −340 слитых и +28 заработанных
+нарушением дают −312, и по этому числу не видно ни одного из двух фактов.
 """
 
 from dataclasses import dataclass
@@ -33,6 +37,8 @@ class MarkingMetrics:
     coverage_pct: Decimal
     discipline_pct: Decimal | None
     emotion_cost_usd: Decimal
+    lost_on_emotions_usd: Decimal
+    violations_gain_usd: Decimal
 
     def as_dict(self) -> dict:
         discipline = None if self.discipline_pct is None else str(self.discipline_pct)
@@ -47,6 +53,8 @@ class MarkingMetrics:
                 "profitable": self.violations_profitable,
             },
             "emotion_cost_usd": str(self.emotion_cost_usd),
+            "lost_on_emotions_usd": str(self.lost_on_emotions_usd),
+            "violations_gain_usd": str(self.violations_gain_usd),
         }
 
 
@@ -65,6 +73,8 @@ def compute(
     unmarked: int,
     violations_profitable: int,
     violations_profit_sum: Decimal,
+    violations_loss_sum: Decimal = Decimal("0"),
+    violations_gain_sum: Decimal = Decimal("0"),
 ) -> MarkingMetrics:
     marked = clean + violations
     return MarkingMetrics(
@@ -80,6 +90,8 @@ def compute(
         # «полная недисциплинированность», а это не то же самое, что «не считали».
         discipline_pct=None if marked == 0 else _pct(clean, marked),
         emotion_cost_usd=violations_profit_sum.quantize(Decimal("0.01")),
+        lost_on_emotions_usd=violations_loss_sum.quantize(Decimal("0.01")),
+        violations_gain_usd=violations_gain_sum.quantize(Decimal("0.01")),
     )
 
 
