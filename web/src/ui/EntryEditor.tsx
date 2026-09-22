@@ -11,10 +11,14 @@ export function EntryEditor({
   level,
   periodStart,
   entry,
+  grow,
 }: {
   level: 'day' | 'week' | 'month'
   periodStart: string
   entry: DiaryEntry | null
+  // grow — карточка занимает остаток высоты колонки, как в прототипе:
+  // поле «Состояние» тянется до низа экрана, а не обрывается на трёх строках.
+  grow?: boolean
 }) {
   const presets = usePresets()
   const draft = useEntryDraft({ level, periodStart, entry })
@@ -22,7 +26,13 @@ export function EntryEditor({
   return (
     <div
       className="card"
-      style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column' }}
+      style={{
+        padding: '14px 18px',
+        display: 'flex',
+        flexDirection: 'column',
+        flexGrow: grow ? 1 : undefined,
+        minHeight: grow ? 0 : undefined,
+      }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 11 }}>
         <span className="klabel">Запись за сегодня</span>
@@ -95,9 +105,15 @@ export function EntryEditor({
             id="entry-body"
             value={draft.note}
             onChange={(e) => draft.setNote(e.target.value)}
-            rows={3}
+            rows={grow ? undefined : 3}
             placeholder="Что происходило с тобой в этот день"
-            style={{ width: '100%', marginTop: 7, resize: 'vertical' }}
+            style={{
+              width: '100%',
+              marginTop: 7,
+              flexGrow: grow ? 1 : undefined,
+              minHeight: 72,
+              resize: grow ? 'none' : 'vertical',
+            }}
           />
         </>
       ) : (

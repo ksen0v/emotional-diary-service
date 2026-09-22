@@ -1,5 +1,5 @@
 import type { Curve } from '../lib/types'
-import { pct, time } from './format'
+import { pct, pctPlain, time } from './format'
 
 // Кривая дня — реконструкция из закрытых сделок, а не биржевой график:
 // точка появляется на каждой сделке, а не через равные промежутки времени.
@@ -45,7 +45,7 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
           {pct(last.equity_pct)}
         </span>
         <span className="hint">
-          пик {pct(curve.close.peak_pct)} · просадка {pct(curve.close.max_drawdown_pct)}
+          пик {pct(curve.close.peak_pct)} · просадка {pctPlain(curve.close.max_drawdown_pct)}
         </span>
         <div style={{ flexGrow: 1 }} />
         {!curve.unrealized.available && (

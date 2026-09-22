@@ -135,6 +135,20 @@ async def _source_block(s: AsyncSession, connection) -> dict | None:
     }
 
 
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """Русские окончания. Текст сообщения собирает сервер (Архитектура ч.2 §1.3),
+    значит и согласование числа — его работа, а не фронта."""
+    rest = abs(n) % 100
+    if 10 < rest < 20:
+        return many
+    last = rest % 10
+    if last == 1:
+        return one
+    if 1 < last < 5:
+        return few
+    return many
+
+
 async def _attention(counters: dict, connection) -> list[dict]:
     """Что требует действия. Один список вместо набора булевых полей."""
     out: list[dict] = []
@@ -144,7 +158,8 @@ async def _attention(counters: dict, connection) -> list[dict]:
             {
                 "code": "unmarked_trades",
                 "count": unmarked,
-                "message": f"{unmarked} сделок без разметки за сегодня.",
+                "message": f"{unmarked} {_plural(unmarked, 'сделка', 'сделки', 'сделок')}"
+                " без разметки за сегодня.",
             }
         )
     if connection is not None and connection.state == "error":

@@ -29,7 +29,7 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   }
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', height: '100vh' }}>
       <nav
         style={{
           width: 208,
@@ -115,7 +115,20 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           </div>
         )}
 
-        <div style={{ flexGrow: 1, padding: '20px 24px', minHeight: 0 }}>{children}</div>
+        {/* Высота окна — это рабочая область: экраны прототипа растянуты
+            по ней, а не обрываются по высоте содержимого. */}
+        <div
+          style={{
+            flexGrow: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '20px 24px',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   )

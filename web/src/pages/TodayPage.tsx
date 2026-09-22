@@ -154,7 +154,15 @@ function PreSession({ today }: { today: Today }) {
   const navigate = useNavigate()
   const y = today.yesterday
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 20,
+        flexGrow: 1,
+        minHeight: 0,
+      }}
+    >
       <div
         className="card"
         style={{ padding: '40px 44px', display: 'flex', gap: 44, flexWrap: 'wrap' }}
@@ -222,14 +230,23 @@ function PreSession({ today }: { today: Today }) {
         </div>
       </div>
 
-      <div style={{ opacity: 0.38, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div
+        style={{
+          opacity: 0.38,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          flexGrow: 1,
+          minHeight: 0,
+        }}
+      >
         <div className="card" style={{ padding: '16px 18px' }}>
           <Tiles today={today} empty />
           <div className="hint" style={{ marginTop: 10 }}>
             Кривая дня появится с первой закрытой сделкой.
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', flexGrow: 1, minHeight: 200 }}>
           <div className="card" style={{ width: 636, maxWidth: '100%', padding: '14px 18px' }}>
             <div className="klabel">Ближе всего к срабатыванию</div>
             <div className="hint" style={{ marginTop: 10 }}>
@@ -295,7 +312,15 @@ function DayScreen({ today }: { today: Today }) {
   })
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flexGrow: 1,
+        minHeight: 0,
+      }}
+    >
       <div
         className="card"
         style={{
@@ -304,6 +329,7 @@ function DayScreen({ today }: { today: Today }) {
           alignItems: 'center',
           gap: 16,
           flexWrap: 'wrap',
+          flexShrink: 0,
           borderLeft: `3px solid ${label?.color ?? 'var(--line-2)'}`,
         }}
       >
@@ -323,6 +349,12 @@ function DayScreen({ today }: { today: Today }) {
               ? `Итог дня: ${money(today.counters.profit_usd)} · ${today.counters.all_trades} сделок · нарушений ${today.counters.violations}`
               : `Идёт ${elapsed !== null ? duration(elapsed) : '—'} · закроется автоматически в ${dayEnds} · балл допуска ${today.admission?.score} из ${today.admission?.max_score ?? 25}`}
           </div>
+          {today.admission?.verdict === 'red' && !closed && (
+            <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: 5 }}>
+              Рекомендация: половина обычного размера позиции. Сервис не урезает
+              размер сам — это напоминание.
+            </div>
+          )}
         </div>
         {closed ? (
           today.review.state === 'pending' ? (
@@ -345,16 +377,6 @@ function DayScreen({ today }: { today: Today }) {
 
       {closeError && <div className="err">{closeError}</div>}
 
-      {today.admission?.verdict === 'red' && !closed && (
-        <div
-          className="card"
-          style={{ padding: '12px 18px', borderLeft: '3px solid var(--warn)', fontSize: 13 }}
-        >
-          Под риском: рекомендация — половина обычного размера позиции. Сервис
-          не урезает размер сам, это напоминание.
-        </div>
-      )}
-
       {today.attention.length > 0 && (
         <div className="card" style={{ padding: '12px 18px' }}>
           {today.attention.map((item) => (
@@ -370,14 +392,25 @@ function DayScreen({ today }: { today: Today }) {
         {curve.data && <DayCurve curve={curve.data} bare />}
       </div>
 
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 16,
+          flexWrap: 'wrap',
+          flexGrow: 1,
+          minHeight: 340,
+          alignItems: 'stretch',
+        }}
+      >
         <div
           style={{
             width: 636,
+            flexShrink: 0,
             maxWidth: '100%',
             display: 'flex',
             flexDirection: 'column',
             gap: 16,
+            minHeight: 0,
           }}
         >
           <Stub
@@ -390,7 +423,15 @@ function DayScreen({ today }: { today: Today }) {
             step={10}
             what="Срабатывания правил с отметкой «соблюдено» или «нарушено»."
           />
-          <div className="card" style={{ padding: '14px 18px' }}>
+          <div
+            className="card"
+            style={{
+              padding: '14px 18px',
+              flexGrow: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+            }}
+          >
             <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 8 }}>
               <span className="klabel">Последние сделки</span>
               <button
@@ -472,11 +513,14 @@ function DayScreen({ today }: { today: Today }) {
 
         <div
           style={{
-            flexGrow: 1,
+            // flexBasis 0: иначе колонка требует ширину по содержимому
+            // и строка переносится, а «Запись за сегодня» уезжает вниз.
+            flex: '1 1 0',
             minWidth: 280,
             display: 'flex',
             flexDirection: 'column',
             gap: 16,
+            minHeight: 0,
           }}
         >
           <Stub
@@ -484,7 +528,7 @@ function DayScreen({ today }: { today: Today }) {
             step={7}
             what="Дни подряд без нарушений, лучший результат и заморозки."
           />
-          <EntryEditor level="day" periodStart={today.day} entry={today.entry} />
+          <EntryEditor level="day" periodStart={today.day} entry={today.entry} grow />
         </div>
       </div>
     </div>

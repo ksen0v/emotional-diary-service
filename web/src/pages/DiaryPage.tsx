@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import type { DiaryItem, DiaryList } from '../lib/types'
 import { Comments, TagChip } from '../ui/EntryEditor'
 import { useEntryDraft, usePresets } from '../ui/entry'
-import { money, pct } from '../ui/format'
+import { money, moneyShort, pct, plural } from '../ui/format'
 import { useToday } from './TodayPage'
 
 // Э-09 по прототипу: календарь — постоянная левая колонка на всех уровнях,
@@ -26,6 +26,10 @@ const MONTHS = [
 const MONTHS_SHORT = [
   'янв', 'фев', 'мар', 'апр', 'мая', 'июн',
   'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+]
+const MONTHS_GENITIVE = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
 ]
 const WEEKDAYS_LONG = [
   'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье',
@@ -90,7 +94,8 @@ function shortDate(value: string): string {
 }
 function longDate(value: string): string {
   const d = parse(value)
-  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}, ${WEEKDAYS_LONG[(d.getDay() + 6) % 7]}`
+  const month = MONTHS_GENITIVE[d.getMonth()]
+  return `${d.getDate()} ${month}, ${WEEKDAYS_LONG[(d.getDay() + 6) % 7]}`
 }
 
 export function DiaryPage() {
@@ -158,7 +163,15 @@ export function DiaryPage() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 18,
+        flexGrow: 1,
+        minHeight: 0,
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         {LEVELS.map((l) => (
           <button
@@ -201,7 +214,16 @@ export function DiaryPage() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 20,
+          flexWrap: 'wrap',
+          flexGrow: 1,
+          minHeight: 460,
+          alignItems: 'stretch',
+        }}
+      >
         <Calendar
           month={month}
           todayIso={todayIso}
@@ -222,11 +244,15 @@ export function DiaryPage() {
 
         <div
           style={{
-            flexGrow: 1,
+            // flexBasis 0 обязателен: с базой auto колонка требует ширину
+            // по содержимому, и строка переносится — календарь уезжает вверх,
+            // а панель под него.
+            flex: '1 1 0',
             minWidth: 320,
             display: 'flex',
             flexDirection: 'column',
             gap: 18,
+            minHeight: 0,
           }}
         >
           <PeriodCard
@@ -282,13 +308,24 @@ function Calendar({
   }
 
   return (
-    <div className="card" style={{ width: 520, maxWidth: '100%', padding: 18 }}>
+    <div
+      className="card"
+      style={{
+        width: 520,
+        flexShrink: 0,
+        maxWidth: '100%',
+        padding: 18,
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 12 }}>
         <span style={{ fontSize: 14, fontWeight: 500 }}>
           {MONTHS[first.getMonth()]} {first.getFullYear()}
         </span>
         <span className="mono hint" style={{ marginLeft: 'auto' }}>
-          {money(profit)} · {daysWithTrades} дней
+          {moneyShort(profit)} · {daysWithTrades}{' '}
+          {plural(daysWithTrades, 'день', 'дня', 'дней')}
         </span>
       </div>
 
@@ -317,7 +354,7 @@ function Calendar({
           const day = `${month.slice(0, 8)}${String(i + 1).padStart(2, '0')}`
           const item = byDay.get(day)
           const future = day > todayIso
-          const on = inSelection(day) && !future
+          const on = inSelection(day)
           const value = item ? Number(item.facts.profit_usd) : 0
           return (
             <button
@@ -354,7 +391,7 @@ function Calendar({
                   className="mono"
                   style={{ fontSize: 11, color: value < 0 ? 'var(--bad)' : 'var(--ok)' }}
                 >
-                  {money(item.facts.profit_usd)}
+                  {moneyShort(item.facts.profit_usd)}
                 </span>
               )}
             </button>
@@ -362,12 +399,13 @@ function Calendar({
         })}
       </div>
 
+      <div style={{ flexGrow: 1, minHeight: 16 }} />
+
       <div
         style={{
           display: 'flex',
           gap: 14,
           flexWrap: 'wrap',
-          marginTop: 16,
           paddingTop: 14,
           borderTop: '1px solid #232320',
         }}
@@ -479,7 +517,12 @@ function PeriodCard({
       ? selected === todayIso
         ? 'сегодня'
         : ''
-      : `${f?.days_with_trades ?? 0} торговых дней`
+      : `${f?.days_with_trades ?? 0} ${plural(
+          f?.days_with_trades ?? 0,
+          'торговый день',
+          'торговых дня',
+          'торговых дней',
+        )}`
 
   return (
     <div className="card" style={{ padding: '20px 22px' }}>
@@ -640,8 +683,14 @@ function PeriodRows({ facts }: { facts: DiaryItem['facts'] }) {
       />
       {facts.confidence && !facts.confidence.enough_data && (
         <div className="hint" style={{ marginTop: 8 }}>
-          Мало данных: {facts.confidence.days_available} торговых дней из{' '}
-          {facts.confidence.days_required}. Выводы делать рано.
+          Мало данных: {facts.confidence.days_available}{' '}
+          {plural(
+            facts.confidence.days_available,
+            'торговый день',
+            'торговых дня',
+            'торговых дней',
+          )}{' '}
+          из {facts.confidence.days_required}. Выводы делать рано.
         </div>
       )}
     </>
@@ -668,7 +717,16 @@ function StateCard({
   const [ownTag, setOwnTag] = useState('')
 
   return (
-    <div className="card" style={{ padding: '18px 22px' }}>
+    <div
+      className="card"
+      style={{
+        padding: '18px 22px',
+        flexGrow: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 12 }}>
         <span className="klabel">{STATE_LABEL[level]}</span>
         <span className="mono hint" style={{ marginLeft: 'auto' }}>
@@ -704,7 +762,7 @@ function StateCard({
           <select
             value={draft.status}
             onChange={(e) => draft.setStatus(e.target.value)}
-            style={{ fontSize: 13, padding: '6px 9px' }}
+            style={{ fontSize: 13, padding: '6px 9px', maxWidth: 210 }}
             aria-label="Статус периода"
           >
             <option value="">не выбран</option>
@@ -770,9 +828,8 @@ function StateCard({
         <textarea
           value={draft.note}
           onChange={(e) => draft.setNote(e.target.value)}
-          rows={4}
           placeholder="Что происходило с тобой в этот период"
-          style={{ width: '100%', minHeight: 92, resize: 'vertical' }}
+          style={{ width: '100%', flexGrow: 1, minHeight: 92, resize: 'none' }}
         />
       ) : (
         <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>

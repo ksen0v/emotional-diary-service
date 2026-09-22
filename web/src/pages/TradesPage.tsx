@@ -12,7 +12,7 @@ import type {
 import { DayCurve } from '../ui/DayCurve'
 import { DevPanel } from '../ui/DevPanel'
 import { useConnections } from '../ui/SourceCard'
-import { MARKING, duration, money, pct, pnlColor, time } from '../ui/format'
+import { MARKING, duration, money, pct, plural, pnlColor, time } from '../ui/format'
 
 const PERIODS = [
   { key: 'today', label: 'Сегодня' },
@@ -231,7 +231,13 @@ export function TradesPage() {
           )}
           {!metrics.data.confidence.enough_data && (
             <div className="hint" style={{ alignSelf: 'center', maxWidth: 320 }}>
-              Мало данных: {metrics.data.confidence.days_available} торговых дней
+              Мало данных: {metrics.data.confidence.days_available}{' '}
+              {plural(
+                metrics.data.confidence.days_available,
+                'торговый день',
+                'торговых дня',
+                'торговых дней',
+              )}{' '}
               из {metrics.data.confidence.days_required}. Выводы делать рано.
             </div>
           )}

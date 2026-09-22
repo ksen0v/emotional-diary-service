@@ -1,14 +1,14 @@
-// Заглушка раздела, который появится на своём шаге. Текст честный:
-// не «скоро», а на каком шаге и что там будет.
+// Заглушка блока, который появится на своём шаге. Текст честный: не «скоро»,
+// а что там будет и на каком шаге. Компактная — блок стоит в ряду с рабочими
+// карточками, и раздувать его ради обещания незачем.
 export function Stub({ title, step, what }: { title: string; step: number; what: string }) {
   return (
-    <div className="card" style={{ padding: '20px 22px', maxWidth: 620 }}>
-      <div className="klabel" style={{ marginBottom: 10 }}>
+    <div className="card" style={{ padding: '14px 18px' }}>
+      <div className="klabel" style={{ marginBottom: 8 }}>
         {title}
       </div>
-      <div style={{ color: 'var(--dim)' }}>{what}</div>
-      <div className="hint" style={{ marginTop: 10 }}>
-        Появится на шаге {step} плана разработки.
+      <div className="hint">
+        {what} Появится на шаге {step}.
       </div>
     </div>
   )
