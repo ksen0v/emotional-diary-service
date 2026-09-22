@@ -7,6 +7,7 @@
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,7 @@ from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
 from eds.modules.source import repo as source_repo
+from eds.modules.trades import repo as trades_repo
 from eds.modules.trades import service as trades_service
 from eds.platform import auth
 
@@ -54,9 +56,7 @@ async def build(
         "day_ends_at": day_ends_at(day, prefs.timezone, prefs.day_cutoff),
         "state": state,
         "shadow_mode": prefs.shadow_mode,
-        "admission": daybook.admission_out(
-            day_row, check_row.created_at if check_row else None
-        ),
+        "admission": daybook.admission_out(day_row, check_row),
         "session": {
             "opened_at": day_row.session_opened_at if day_row else None,
             "closed_at": day_row.session_closed_at if day_row else None,
@@ -84,12 +84,34 @@ async def build(
             "required_for_next_session": pending_day is not None,
         },
         "counters": counters,
+        # Итог вчерашнего дня. Нужен экрану до чека: перед тем как открывать
+        # сессию, полезно увидеть, чем кончился прошлый день, — особенно
+        # заполнен ли разбор.
+        "yesterday": await _yesterday(s, user_id, day),
         "source": await _source_block(s, connection),
         "attention": await _attention(counters, connection),
         "thresholds": {
             "pass_score": prefs.pass_score,
             "min_score": prefs.min_score,
         },
+    }
+
+
+async def _yesterday(s: AsyncSession, user_id: uuid.UUID, today_day: dt.date) -> dict:
+    day = today_day - dt.timedelta(days=1)
+    summary = (await trades_repo.day_summaries(s, user_id, day, day)).get(day)
+    row = await daybook_repo.day_of(s, user_id, day)
+    return {
+        "day": day.isoformat(),
+        "trades": summary["trades"] if summary else 0,
+        "violations": summary["violations"] if summary else 0,
+        "profit_usd": str(
+            trades_service.quantize_money(
+                summary["profit_usd"] if summary else Decimal("0")
+            )
+        ),
+        "admission": row.admission if row else None,
+        "review_state": row.review_state if row else "none",
     }
 
 

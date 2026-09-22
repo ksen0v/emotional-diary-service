@@ -8,6 +8,7 @@ daybook, цифры — trades, допуск дня — снова daybook. Им
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,32 +99,55 @@ async def _day_items(
                         entry, tags.get(entry.id, []), comments.get(entry.id, [])
                     )
                 ),
-                "facts": {
-                    "trades": summary["trades"] if summary else 0,
-                    "violations": summary["violations"] if summary else 0,
-                    "unmarked": summary["unmarked"] if summary else 0,
-                    "profit_usd": str(
-                        trades_service.quantize_money(summary["profit_usd"])
-                        if summary
-                        else 0
-                    ),
-                    "account_return_pct": str(
-                        trades_service.quantize_pct(summary["account_return_pct"])
-                        if summary
-                        else 0
-                    ),
-                    "admission": row.admission if row else None,
-                    "check_score": row.check_score if row else None,
-                    "review_state": row.review_state if row else "none",
-                    # Стрик появится на шаге 7; null означает «сервис этого
-                    # ещё не считает», а не «день не зачтён».
-                    "counted_in_streak": None,
-                },
+                "facts": _day_facts(summary, row),
             }
         )
         day += dt.timedelta(days=1)
     items.reverse()
     return items
+
+
+def _day_facts(summary: dict | None, row) -> dict:
+    """Факты одного дня — то, что стоит рядом с записью и в клетке календаря."""
+    trades = summary["trades"] if summary else 0
+    unmarked = summary["unmarked"] if summary else 0
+    marked = trades - unmarked
+    coverage = (
+        (Decimal(marked) / Decimal(trades) * 100).quantize(Decimal("0.01"))
+        if trades
+        else Decimal("0.00")
+    )
+    return {
+        "trades": trades,
+        "violations": summary["violations"] if summary else 0,
+        "unmarked": unmarked,
+        "coverage_pct": str(coverage),
+        "profit_usd": str(
+            trades_service.quantize_money(summary["profit_usd"] if summary else Decimal("0"))
+        ),
+        "account_return_pct": str(
+            trades_service.quantize_pct(
+                summary["account_return_pct"] if summary else Decimal("0")
+            )
+        ),
+        "emotion_cost_usd": str(
+            trades_service.quantize_money(
+                summary["emotion_cost_usd"] if summary else Decimal("0")
+            )
+        ),
+        "admission": row.admission if row else None,
+        "check_score": row.check_score if row else None,
+        "review_state": row.review_state if row else "none",
+        # Правила и блокировки появятся на шаге 9. Здесь честные нули,
+        # а не null: срабатываний действительно не было ни одного, потому что
+        # движка ещё нет, и это видно по нулям, а не по прочерку.
+        "rules_fired": 0,
+        "locks": 0,
+        "locks_kept": 0,
+        # Стрик появится на шаге 7; null означает «сервис этого ещё
+        # не считает», а не «день не зачтён».
+        "counted_in_streak": None,
+    }
 
 
 async def _period_items(
@@ -194,6 +218,7 @@ async def period_facts(
     )
 
     marking = computed.as_dict()
+    tags = await daybook_repo.tag_counts_in_range(s, user_id, since, until)
     return {
         "trades": totals["count"],
         "significant_trades": totals["significant_count"],
@@ -211,8 +236,14 @@ async def period_facts(
         "violations_gain_usd": marking["violations_gain_usd"],
         "days_without_admission": without,
         "days_with_trades": len(summaries),
-        # Compliance блокировок — шаг 9, стрик — шаг 7.
-        "lock_compliance_pct": None,
+        # Ментальные теги периода со счётчиком дней (ТЗ 5.3).
+        "tags": [{"tag": tag, "days": days} for tag, days in tags],
+        # Блокировки появятся на шаге 9. Нули честные: срабатываний не было,
+        # потому что движка нет. Compliance при нуле блокировок — 100%,
+        # и подпись «блокировок не было» не даёт принять это за измерение.
+        "locks": 0,
+        "locks_kept": 0,
+        "rules_fired": 0,
         "counted_in_streak": None,
         "confidence": confidence,
     }

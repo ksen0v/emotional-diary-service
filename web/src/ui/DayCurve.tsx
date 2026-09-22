@@ -3,16 +3,21 @@ import { pct, time } from './format'
 
 // Кривая дня — реконструкция из закрытых сделок, а не биржевой график:
 // точка появляется на каждой сделке, а не через равные промежутки времени.
-export function DayCurve({ curve }: { curve: Curve }) {
+export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
   const points = curve.points
+  // bare — кривая живёт внутри чужой карточки (главный экран собран так
+  // в прототипе: плитки метрик и кривая — один блок, а не два).
+  const Frame = bare ? Bare : Card
   if (points.length === 0) {
     return (
-      <div className="card" style={{ padding: '18px 20px' }}>
-        <div className="klabel" style={{ marginBottom: 8 }}>
-          Кривая дня
-        </div>
+      <Frame>
+        {!bare && (
+          <div className="klabel" style={{ marginBottom: 8 }}>
+            Кривая дня
+          </div>
+        )}
         <div className="hint">Сегодня закрытых сделок ещё нет.</div>
-      </div>
+      </Frame>
     )
   }
 
@@ -33,7 +38,7 @@ export function DayCurve({ curve }: { curve: Curve }) {
   const last = points[points.length - 1]
 
   return (
-    <div className="card" style={{ padding: '18px 20px' }}>
+    <Frame>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 12 }}>
         <span className="klabel">Кривая дня</span>
         <span className="mono" style={{ fontSize: 13 }}>
@@ -78,6 +83,18 @@ export function DayCurve({ curve }: { curve: Curve }) {
         <span>{time(points[0].at)}</span>
         <span>{time(last.at)}</span>
       </div>
+    </Frame>
+  )
+}
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="card" style={{ padding: '18px 20px' }}>
+      {children}
     </div>
   )
+}
+
+function Bare({ children }: { children: React.ReactNode }) {
+  return <div>{children}</div>
 }

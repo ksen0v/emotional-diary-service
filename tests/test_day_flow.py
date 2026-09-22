@@ -162,6 +162,48 @@ async def test_unclosed_review_blocks_the_check(app_client, factory) -> None:
     assert state["review"]["required_for_next_session"] is True
 
 
+async def test_admission_keeps_what_dragged_the_score(app_client) -> None:
+    """Просадившие ответы должны жить в состоянии дня, а не только в ответе чека.
+
+    Экран «нет допуска» открывается и после перезагрузки страницы, и без них
+    там остаётся одно число без объяснения.
+    """
+    await setup(app_client)
+    await check(app_client, {**WORST, "plan": 5})
+
+    admission = (await today(app_client))["admission"]
+    assert admission["verdict"] == "denied"
+    assert admission["max_score"] == 25
+    assert admission["checked_at"] is not None
+    weak = {item["short"]: item["points"] for item in admission["weak"]}
+    # План на пятёрку в списке не появился, остальные четыре — появились.
+    assert "План на день" not in weak
+    assert weak["Сон"] == 1
+    assert weak["Желание отыграться"] == 1
+
+
+async def test_check_score_counts_the_inverted_question_as_is(app_client) -> None:
+    """У обратного вопроса переворачиваются подписи, а не арифметика.
+
+    «1» на вопросе про отыгрыш означает сильное желание и даёт один балл:
+    так одно и то же число значит одно и то же на экране, в базе и в правилах.
+    """
+    await setup(app_client)
+    res = await check(app_client, {**BEST, "revenge": 1})
+    body = res.json()
+    assert body["score"] == 21
+    assert body["verdict"] == "green"
+    assert [w["short"] for w in body["weak"]] == ["Желание отыграться"]
+
+    catalog = await app_client.get("/api/v1/premarket/questions")
+    revenge = next(
+        q for q in catalog.json()["questions"] if q["id"] == "revenge"
+    )
+    assert revenge["labels"]["1"] == "Сильное"
+    assert revenge["labels"]["5"] == "Нет"
+    assert revenge["hint"]
+
+
 async def test_questions_come_from_the_server(app_client) -> None:
     await setup(app_client)
     res = await app_client.get("/api/v1/premarket/questions")

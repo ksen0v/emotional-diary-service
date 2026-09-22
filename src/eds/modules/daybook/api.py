@@ -24,6 +24,7 @@ class QuestionOut(BaseModel):
     min: int
     max: int
     labels: dict[str, str]
+    hint: str
     inverted: bool
 
 

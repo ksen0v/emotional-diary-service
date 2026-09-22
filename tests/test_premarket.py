@@ -1,8 +1,10 @@
 """Балл чека, пороги допуска и состояния дня — чистые функции.
 
-Главное здесь — обратная шкала. Вопрос «есть ли желание отыграться» устроен
-так, что большой ответ означает плохое состояние, и если переворот считать
-во фронте, балл будет зависеть от того, откуда пришёл ответ.
+Главное здесь — обратная шкала. У вопроса «есть ли желание отыграться»
+переворачиваются подписи, а не арифметика: «1 — сильное желание», «5 — нет».
+Так шкала «больше — лучше» остаётся единой, и один и тот же ответ означает
+одно и то же на экране, в базе и в правилах. Вычитание вместо подписей дало бы
+два разных смысла у числа 5 и балл, зависящий от того, откуда пришёл ответ.
 """
 
 import datetime as dt
@@ -13,8 +15,8 @@ from eds.modules.daybook import questions, service
 from eds.modules.daybook.models import TradingDay
 from eds.platform.errors import AppError
 
-BEST = {"sleep": 5, "emotion": 5, "yesterday": 5, "revenge": 1, "plan": 5}
-WORST = {"sleep": 1, "emotion": 1, "yesterday": 1, "revenge": 5, "plan": 1}
+BEST = {"sleep": 5, "emotion": 5, "yesterday": 5, "revenge": 5, "plan": 5}
+WORST = {"sleep": 1, "emotion": 1, "yesterday": 1, "revenge": 1, "plan": 1}
 MIDDLE = {"sleep": 3, "emotion": 3, "yesterday": 3, "revenge": 3, "plan": 3}
 
 
@@ -23,13 +25,20 @@ def test_five_questions_max_25() -> None:
     assert questions.MAX_SCORE == 25
 
 
-def test_inverted_question_is_counted_backwards() -> None:
+def test_inverted_question_is_labelled_not_recalculated() -> None:
     assert questions.score_of(BEST) == 25
     assert questions.score_of(WORST) == 5
     assert questions.score_of(MIDDLE) == 15
-    # «Нет желания отыграться» даёт максимум, «сильное желание» — минимум.
-    assert questions.BY_ID["revenge"].points(1) == 5
-    assert questions.BY_ID["revenge"].points(5) == 1
+
+    revenge = questions.BY_ID["revenge"]
+    # Переворот живёт в подписях: «1 — сильное желание», «5 — нет желания».
+    assert revenge.inverted is True
+    assert revenge.low == "Сильное"
+    assert revenge.high == "Нет"
+    assert revenge.hint
+    # Арифметика та же, что у остальных: больше ответ — больше балл.
+    assert revenge.points(1) == 1
+    assert revenge.points(5) == 5
 
 
 def test_verdicts_follow_settings_not_constants() -> None:
@@ -43,9 +52,9 @@ def test_verdicts_follow_settings_not_constants() -> None:
 
 
 def test_weak_answers_name_what_dragged_the_score() -> None:
-    weak = questions.weak_answers({**BEST, "sleep": 2, "revenge": 4})
+    weak = questions.weak_answers({**BEST, "sleep": 2, "revenge": 1})
     names = {item["short"]: item["points"] for item in weak}
-    assert names == {"Сон": 2, "Желание отыграться": 2}
+    assert names == {"Сон": 2, "Желание отыграться": 1}
 
 
 def test_incomplete_check_is_refused() -> None:

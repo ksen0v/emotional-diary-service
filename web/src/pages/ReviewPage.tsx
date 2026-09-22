@@ -3,15 +3,26 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError, api } from '../lib/api'
 import type { DiaryList, ReviewState } from '../lib/types'
-import { money } from '../ui/format'
+import { money, pct } from '../ui/format'
 
-// Э-07: четыре поля, ни одного необязательного по смыслу. Сверху — факты дня
-// без комментариев: разбор идёт поверх цифр, не вместо них.
+// Э-07 по прототипу: факты дня слева, четыре пронумерованных поля справа.
+// Разбор идёт поверх цифр, а не вместо них — поэтому цифры на экране, а не
+// «вспомни, как прошёл день».
 const PLAN = [
   { key: 'yes', label: 'Да' },
   { key: 'partial', label: 'Частично' },
   { key: 'no', label: 'Нет' },
 ] as const
+
+const MONTHS = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+]
+
+function humanDate(value: string): string {
+  const [y, m, d] = value.split('-').map(Number)
+  return `${d} ${MONTHS[m - 1]} ${y}`
+}
 
 export function ReviewPage() {
   const { day = '' } = useParams()
@@ -24,7 +35,7 @@ export function ReviewPage() {
     enabled: Boolean(day),
   })
   const facts = useQuery<DiaryList>({
-    queryKey: ['diary', 'day', day],
+    queryKey: ['diary', 'day-one', day],
     queryFn: () => api.get<DiaryList>(`/entries?level=day&from=${day}&to=${day}`),
     enabled: Boolean(day),
   })
@@ -55,160 +66,208 @@ export function ReviewPage() {
   })
 
   const done = state.data?.review
-  const dayFacts = facts.data?.items[0]?.facts
+  const f = facts.data?.items[0]?.facts
 
   return (
-    <div style={{ maxWidth: 620, display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div>
-        <div className="serif" style={{ fontSize: 22 }}>
-          Разбор за{' '}
-          {day
-            ? new Date(day).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
-            : ''}
+    <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+      <div style={{ width: 300, flexShrink: 0 }}>
+        <div className="klabel" style={{ marginBottom: 14 }}>
+          Факты дня
         </div>
-        <div className="hint" style={{ marginTop: 4 }}>
-          Оцени, как ты торговал, не сколько заработал.
-        </div>
-      </div>
-
-      {dayFacts && (
-        <div
-          className="card"
-          style={{ padding: '14px 18px', display: 'flex', gap: 26, flexWrap: 'wrap' }}
-        >
-          <Fact label="Сделок" value={String(dayFacts.trades)} />
-          <Fact label="Нарушений" value={String(dayFacts.violations)} />
-          <Fact label="Результат" value={money(dayFacts.profit_usd)} />
-          <Fact
-            label="Допуск"
-            value={
-              dayFacts.admission === 'green'
-                ? 'зелёный'
-                : dayFacts.admission === 'red'
-                  ? 'под риском'
-                  : dayFacts.admission === 'denied'
-                    ? 'нет'
-                    : 'чека не было'
-            }
-          />
-        </div>
-      )}
-
-      {done ? (
         <div className="card" style={{ padding: '18px 20px' }}>
-          <div className="klabel" style={{ marginBottom: 12 }}>
-            Разбор заполнен
-          </div>
-          <Line label="План" value={PLAN.find((p) => p.key === done.plan_followed)?.label ?? ''} />
-          <Line label="Что дёрнуло" value={done.pull_text ?? '—'} />
-          <Line
-            label="Исполнение"
-            value={done.execution_score ? `${done.execution_score} из 5` : '—'}
-          />
-          <Line label="Вывод" value={done.takeaway ?? '—'} />
-          <button
-            onClick={() => navigate('/today')}
-            style={{ marginTop: 14, fontSize: 12, padding: '6px 12px' }}
-          >
-            К главному экрану
-          </button>
-        </div>
-      ) : (
-        <div className="card" style={{ padding: '18px 20px' }}>
-          <Field label="Соблюдал план?">
-            <div style={{ display: 'flex', gap: 6 }}>
-              {PLAN.map((option) => (
-                <button
-                  key={option.key}
-                  onClick={() => setPlan(option.key)}
-                  className={plan === option.key ? 'primary' : ''}
-                  style={{ fontSize: 13, padding: '7px 14px' }}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Что дёрнуло сильнее всего?">
-            <textarea
-              value={pull}
-              onChange={(e) => setPull(e.target.value)}
-              rows={2}
-              placeholder="Если ничего — оставь пустым."
-              style={{ width: '100%', resize: 'vertical' }}
-            />
-          </Field>
-
-          <Field label="Оценка исполнения">
-            <div style={{ display: 'flex', gap: 6 }}>
-              {[1, 2, 3, 4, 5].map((value) => (
-                <button
-                  key={value}
-                  onClick={() => setScore(score === value ? null : value)}
-                  className={score === value ? 'primary' : ''}
-                  style={{ width: 40, fontSize: 14, padding: '8px 0' }}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Один вывод на завтра">
-            <textarea
-              value={takeaway}
-              onChange={(e) => setTakeaway(e.target.value)}
-              rows={2}
-              style={{ width: '100%', resize: 'vertical' }}
-            />
-          </Field>
-
-          <button
-            className="primary"
-            onClick={() => send.mutate()}
-            disabled={send.isPending}
-          >
-            {send.isPending ? 'Отправляю…' : 'Закрыть разбор'}
-          </button>
-          {error && (
-            <div className="err" style={{ marginTop: 12 }}>
-              {error}
-            </div>
+          {f ? (
+            <>
+              <Fact
+                label="PnL"
+                value={money(f.profit_usd)}
+                color={Number(f.profit_usd) < 0 ? 'var(--bad)' : 'var(--ok)'}
+                first
+              />
+              <Fact label="От депозита" value={pct(f.account_return_pct)} />
+              <Fact label="Сделок" value={String(f.trades)} />
+              <Fact
+                label="Нарушений"
+                value={String(f.violations)}
+                color={f.violations > 0 ? 'var(--bad)' : undefined}
+              />
+              <Fact
+                label="Сработало правил"
+                value={String(f.rules_fired)}
+                sub="шаг 9"
+              />
+              <Fact
+                label="Покрытие разметкой"
+                value={`${Number(f.coverage_pct).toFixed(0)}%`}
+              />
+              <Fact
+                label="Цена эмоций"
+                value={money(f.emotion_cost_usd)}
+                color={Number(f.emotion_cost_usd) < 0 ? 'var(--bad)' : undefined}
+              />
+            </>
+          ) : (
+            <div className="hint">загрузка…</div>
           )}
         </div>
-      )}
+        <div className="hint" style={{ marginTop: 14 }}>
+          Разбор идёт поверх цифр, а не вместо них. Оценивается исполнение,
+          не результат.
+        </div>
+      </div>
+
+      <div style={{ flexGrow: 1, minWidth: 320, maxWidth: 620 }}>
+        <div className="serif" style={{ fontSize: 30, marginBottom: 6 }}>
+          Как ты торговал {day ? humanDate(day).replace(/ \d{4}$/, '') : ''}
+        </div>
+        <div className="hint" style={{ marginBottom: 26 }}>
+          {done ? 'Разбор заполнен и больше не меняется.' : 'Четыре вопроса, одна минута.'}
+        </div>
+
+        {done ? (
+          <div className="card" style={{ padding: '18px 20px' }}>
+            <Line
+              label="План"
+              value={PLAN.find((p) => p.key === done.plan_followed)?.label ?? ''}
+            />
+            <Line label="Что дёрнуло" value={done.pull_text ?? '—'} />
+            <Line
+              label="Исполнение"
+              value={done.execution_score ? `${done.execution_score} из 5` : '—'}
+            />
+            <Line label="Вывод" value={done.takeaway ?? '—'} />
+            <button
+              onClick={() => navigate('/today')}
+              style={{ marginTop: 14, fontSize: 12, padding: '6px 12px' }}
+            >
+              К главному экрану
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 13, marginBottom: 10 }}>1. Соблюдал план?</div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                {PLAN.map((option) => (
+                  <button
+                    key={option.key}
+                    onClick={() => setPlan(option.key)}
+                    aria-pressed={plan === option.key}
+                    className={plan === option.key ? 'primary' : ''}
+                    style={{ fontSize: 13, padding: '10px 16px', borderRadius: 8 }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 24 }}>
+              <label htmlFor="r-pull" style={{ fontSize: 13 }}>
+                2. Что дёрнуло сильнее всего?
+              </label>
+              <textarea
+                id="r-pull"
+                value={pull}
+                onChange={(e) => setPull(e.target.value)}
+                rows={3}
+                placeholder="Если ничего — оставь пустым."
+                style={{ width: '100%', marginTop: 10, resize: 'vertical' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 13 }}>3. Оценка исполнения</div>
+              <div className="hint" style={{ margin: '5px 0 10px' }}>
+                Оцени, как ты торговал, не сколько заработал.
+              </div>
+              <div role="group" aria-label="Оценка исполнения" style={{ display: 'flex', gap: 8 }}>
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setScore(score === value ? null : value)}
+                    aria-pressed={score === value}
+                    className={score === value ? 'primary mono' : 'mono'}
+                    style={{ width: 44, height: 44, padding: 0, borderRadius: 8, fontSize: 15 }}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 30 }}>
+              <label htmlFor="r-out" style={{ fontSize: 13 }}>
+                4. Один вывод на завтра
+              </label>
+              <textarea
+                id="r-out"
+                value={takeaway}
+                onChange={(e) => setTakeaway(e.target.value)}
+                rows={2}
+                placeholder="Одно предложение, которое можно выполнить"
+                style={{ width: '100%', marginTop: 10, resize: 'vertical' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <button className="cta" onClick={() => send.mutate()} disabled={send.isPending}>
+                {send.isPending ? 'Сохраняю…' : 'Сохранить и закрыть день'}
+              </button>
+              <span className="mono hint">Стрик появится на шаге 7</span>
+            </div>
+            {error && (
+              <div className="err" style={{ marginTop: 14 }}>
+                {error}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({
+  label,
+  value,
+  sub,
+  color,
+  first,
+}: {
+  label: string
+  value: string
+  sub?: string
+  color?: string
+  first?: boolean
+}) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div className="klabel" style={{ marginBottom: 8 }}>
-        {label}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function Fact({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="klabel" style={{ marginBottom: 4 }}>
-        {label}
-      </div>
-      <div className="mono" style={{ fontSize: 14 }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        padding: '7px 0',
+        borderTop: first ? undefined : '1px solid #232320',
+      }}
+    >
+      <span style={{ fontSize: 13, color: 'var(--dim)' }}>{label}</span>
+      <span
+        className="mono"
+        style={{ marginLeft: 'auto', fontSize: 17, color: color ?? 'var(--fg)' }}
+      >
         {value}
-      </div>
+      </span>
+      {sub && (
+        <span className="mono hint" style={{ marginLeft: 8 }}>
+          {sub}
+        </span>
+      )}
     </div>
   )
 }
 
 function Line({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+    <div style={{ display: 'flex', gap: 10, marginBottom: 9 }}>
       <span className="hint" style={{ width: 110, flexShrink: 0 }}>
         {label}
       </span>

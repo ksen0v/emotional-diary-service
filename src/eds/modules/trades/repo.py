@@ -276,6 +276,9 @@ async def day_summaries(
             func.count().filter(Trade.marking == "unreviewed"),
             func.coalesce(func.sum(Trade.profit_usd), 0),
             func.coalesce(func.sum(Trade.account_return_pct), 0),
+            func.coalesce(
+                func.sum(Trade.profit_usd).filter(Trade.marking == "violation"), 0
+            ),
         )
         .where(
             Trade.user_id == user_id,
@@ -292,6 +295,7 @@ async def day_summaries(
             "unmarked": row[3],
             "profit_usd": Decimal(row[4]),
             "account_return_pct": Decimal(row[5]),
+            "emotion_cost_usd": Decimal(row[6]),
         }
         for row in res
     }

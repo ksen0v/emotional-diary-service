@@ -1,295 +1,146 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { ApiError, api } from '../lib/api'
-import type { DiaryEntry, DiaryPresets } from '../lib/types'
+import type { DiaryEntry } from '../lib/types'
 import { dateTime } from './format'
+import { useEntryDraft, usePresets } from './entry'
 
-// Запись дневника: оценка, статус, ментальные теги, текст. После 48 часов
-// поля закрываются и остаётся комментарий — запись должна остаться тем, что
-// трейдер думал тогда, а не тем, что он думает об этом сейчас (ТЗ 9.2).
+// «Запись за сегодня» с главного экрана: оценка дня, статус, ментальные теги,
+// состояние. Ровно тот состав, что в прототипе Main, и те же поля, что в ТЗ 5.1.
 export function EntryEditor({
   level,
   periodStart,
   entry,
-  onSaved,
 }: {
   level: 'day' | 'week' | 'month'
   periodStart: string
   entry: DiaryEntry | null
-  onSaved?: () => void
 }) {
-  const qc = useQueryClient()
-  const presets = useQuery<DiaryPresets>({
-    queryKey: ['diary-presets'],
-    queryFn: () => api.get<DiaryPresets>('/diary/presets'),
-    staleTime: 60 * 60 * 1000,
-  })
-
-  const [score, setScore] = useState<number | null>(entry?.score ?? null)
-  const [status, setStatus] = useState(entry?.status ?? '')
-  const [tags, setTags] = useState<string[]>(entry?.tags ?? [])
-  const [body, setBody] = useState(entry?.body ?? '')
-  const [ownTag, setOwnTag] = useState('')
-  const [error, setError] = useState('')
-  const [saved, setSaved] = useState(false)
-
-  // Запись могла прийти позже монтирования (или смениться при выборе другого
-  // дня) — тогда поля надо пересобрать, иначе редактируется не то, что открыто.
-  useEffect(() => {
-    setScore(entry?.score ?? null)
-    setStatus(entry?.status ?? '')
-    setTags(entry?.tags ?? [])
-    setBody(entry?.body ?? '')
-    setSaved(false)
-    setError('')
-  }, [entry?.id, periodStart])
-
-  const editable = entry === null || entry.editable
-
-  const save = useMutation({
-    mutationFn: () =>
-      api.put(`/entries/${level}/${periodStart}`, {
-        score,
-        status: status || null,
-        tags,
-        body: body || null,
-      }),
-    onSuccess: () => {
-      setError('')
-      setSaved(true)
-      qc.invalidateQueries({ queryKey: ['diary'] })
-      qc.invalidateQueries({ queryKey: ['today'] })
-      onSaved?.()
-    },
-    onError: (err) => {
-      setSaved(false)
-      setError(err instanceof ApiError ? err.message : 'Не получилось сохранить.')
-    },
-  })
-
-  const comment = useMutation({
-    mutationFn: (text: string) =>
-      api.post(`/entries/${entry?.id}/comments`, { body: text }),
-    onSuccess: () => {
-      setOwnTag('')
-      qc.invalidateQueries({ queryKey: ['diary'] })
-      qc.invalidateQueries({ queryKey: ['today'] })
-    },
-    onError: (err) =>
-      setError(err instanceof ApiError ? err.message : 'Не получилось.'),
-  })
-
-  function toggleTag(tag: string) {
-    setTags(tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag])
-  }
+  const presets = usePresets()
+  const draft = useEntryDraft({ level, periodStart, entry })
 
   return (
-    <div className="card" style={{ padding: '18px 20px' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          gap: 10,
-          marginBottom: 14,
-          flexWrap: 'wrap',
-        }}
-      >
-        <div className="klabel">Запись</div>
-        {!editable && (
-          <span className="hint">
-            правки закрыты {dateTime(entry?.editable_until ?? null)} — остался комментарий
-          </span>
-        )}
+    <div
+      className="card"
+      style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 11 }}>
+        <span className="klabel">Запись за сегодня</span>
+        <span className="mono hint" style={{ marginLeft: 'auto' }}>
+          {draft.saveHint}
+        </span>
       </div>
 
-      {editable ? (
+      {draft.editable ? (
         <>
-          <Field label="Оценка периода">
-            <div style={{ display: 'flex', gap: 6 }}>
-              {[1, 2, 3, 4, 5].map((value) => (
-                <button
-                  key={value}
-                  onClick={() => setScore(score === value ? null : value)}
-                  className={score === value ? 'primary' : ''}
-                  style={{ width: 40, fontSize: 14, padding: '8px 0' }}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </Field>
+          <div style={{ fontSize: 12, color: 'var(--dim)' }}>Оценка дня</div>
+          <div style={{ display: 'flex', gap: 6, margin: '7px 0 14px' }}>
+            {[1, 2, 3, 4, 5].map((value) => (
+              <button
+                key={value}
+                onClick={() => draft.setScore(draft.score === value ? null : value)}
+                aria-pressed={draft.score === value}
+                className={draft.score === value ? 'primary mono' : 'mono'}
+                style={{ width: 34, height: 34, padding: 0, fontSize: 13 }}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
 
-          <Field label="Статус">
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-              {(presets.data?.statuses ?? []).map((preset) => (
-                <Chip
-                  key={preset}
-                  label={preset}
-                  on={status === preset}
-                  onClick={() => setStatus(status === preset ? '' : preset)}
-                />
-              ))}
-            </div>
-            <input
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              placeholder="или своими словами"
-              style={{ width: '100%', maxWidth: 360 }}
-            />
-          </Field>
+          <label style={{ fontSize: 12, color: 'var(--dim)' }} htmlFor="entry-status">
+            Статус дня
+          </label>
+          <select
+            id="entry-status"
+            value={draft.status}
+            onChange={(e) => draft.setStatus(e.target.value)}
+            style={{ margin: '7px 0 14px', fontSize: 13 }}
+          >
+            <option value="">не выбран</option>
+            {(presets.data?.statuses ?? []).map((preset) => (
+              <option key={preset} value={preset}>
+                {preset}
+              </option>
+            ))}
+            {draft.status && !(presets.data?.statuses ?? []).includes(draft.status) && (
+              <option value={draft.status}>{draft.status}</option>
+            )}
+          </select>
 
-          <Field label="Ментальные теги">
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-              {Array.from(new Set([...(presets.data?.tags ?? []), ...tags])).map((tag) => (
-                <Chip
+          <div style={{ fontSize: 12, color: 'var(--dim)', marginBottom: 7 }}>
+            Ментальные теги
+          </div>
+          <div
+            role="group"
+            aria-label="Ментальные теги"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}
+          >
+            {Array.from(new Set([...(presets.data?.tags ?? []), ...draft.tags])).map(
+              (tag) => (
+                <TagChip
                   key={tag}
                   label={tag}
-                  on={tags.includes(tag)}
-                  onClick={() => toggleTag(tag)}
+                  on={draft.tags.includes(tag)}
+                  onClick={() => draft.toggleTag(tag)}
                 />
-              ))}
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                value={ownTag}
-                onChange={(e) => setOwnTag(e.target.value)}
-                placeholder="свой тег"
-                style={{ maxWidth: 200 }}
-              />
-              <button
-                onClick={() => {
-                  const tag = ownTag.trim()
-                  if (tag && !tags.includes(tag)) setTags([...tags, tag])
-                  setOwnTag('')
-                }}
-                style={{ fontSize: 12, padding: '6px 12px' }}
-              >
-                Добавить
-              </button>
-            </div>
-          </Field>
-
-          <Field label="Что было">
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={4}
-              placeholder="Своими словами, без отчёта."
-              style={{ width: '100%', resize: 'vertical' }}
-            />
-          </Field>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button
-              className="primary"
-              onClick={() => save.mutate()}
-              disabled={save.isPending}
-            >
-              {save.isPending ? 'Сохраняю…' : 'Сохранить'}
-            </button>
-            {saved && <span className="ok-text">сохранено</span>}
+              ),
+            )}
           </div>
+
+          <label style={{ fontSize: 12, color: 'var(--dim)' }} htmlFor="entry-body">
+            Состояние
+          </label>
+          <textarea
+            id="entry-body"
+            value={draft.note}
+            onChange={(e) => draft.setNote(e.target.value)}
+            rows={3}
+            placeholder="Что происходило с тобой в этот день"
+            style={{ width: '100%', marginTop: 7, resize: 'vertical' }}
+          />
         </>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Readonly label="Оценка" value={entry?.score ? String(entry.score) : '—'} />
-          <Readonly label="Статус" value={entry?.status ?? '—'} />
-          <Readonly label="Теги" value={entry?.tags.join(', ') || '—'} />
-          <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{entry?.body}</div>
+        <Locked entry={entry} />
+      )}
+
+      {draft.error && (
+        <div className="err" style={{ marginTop: 10 }}>
+          {draft.error}
         </div>
       )}
 
-      {entry && (
-        <div style={{ marginTop: 18, borderTop: '1px solid #2b2b27', paddingTop: 14 }}>
-          <div className="klabel" style={{ marginBottom: 10 }}>
-            Комментарии
-          </div>
-          {entry.comments.length === 0 && (
-            <div className="hint" style={{ marginBottom: 10 }}>
-              Комментарий можно дописать когда угодно — он не переписывает запись.
-            </div>
-          )}
-          {entry.comments.map((item) => (
-            <div key={item.id} style={{ marginBottom: 10 }}>
-              <div className="hint">{dateTime(item.created_at)}</div>
-              <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{item.body}</div>
-            </div>
-          ))}
-          <CommentBox onSend={(text) => comment.mutate(text)} busy={comment.isPending} />
-        </div>
-      )}
-
-      {error && (
-        <div className="err" style={{ marginTop: 12 }}>
-          {error}
-        </div>
+      {entry && (!entry.editable || entry.comments.length > 0) && (
+        <Comments entry={entry} />
       )}
     </div>
   )
 }
 
-function CommentBox({
-  onSend,
-  busy,
-}: {
-  onSend: (text: string) => void
-  busy: boolean
-}) {
-  const [text, setText] = useState('')
-  return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={2}
-        placeholder="Дописать к записи"
-        style={{ flex: 1, resize: 'vertical' }}
-      />
-      <button
-        onClick={() => {
-          if (text.trim()) {
-            onSend(text.trim())
-            setText('')
-          }
-        }}
-        disabled={busy || !text.trim()}
-        style={{ fontSize: 12, padding: '6px 12px' }}
-      >
-        Добавить
-      </button>
-    </div>
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div className="klabel" style={{ marginBottom: 8 }}>
-        {label}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function Chip({
+export function TagChip({
   label,
   on,
   onClick,
+  readonly,
 }: {
   label: string
   on: boolean
-  onClick: () => void
+  onClick?: () => void
+  readonly?: boolean
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={readonly}
+      aria-pressed={on}
       style={{
         fontSize: 12,
-        padding: '5px 11px',
+        padding: '4px 10px',
         borderRadius: 14,
+        cursor: readonly ? 'default' : 'pointer',
+        background: on ? '#2f3a48' : 'transparent',
+        borderColor: on ? 'var(--accent)' : 'var(--line-2)',
         color: on ? 'var(--fg)' : 'var(--dim)',
-        borderColor: on ? 'var(--fg)' : 'var(--line-2)',
       }}
     >
       {label}
@@ -297,13 +148,86 @@ function Chip({
   )
 }
 
-function Readonly({ label, value }: { label: string; value: string }) {
+function Locked({ entry }: { entry: DiaryEntry | null }) {
+  if (!entry) return null
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Line label="Оценка" value={entry.score ? String(entry.score) : '—'} />
+      <Line label="Статус" value={entry.status ?? '—'} />
+      <Line label="Теги" value={entry.tags.join(', ') || '—'} />
+      {entry.body && (
+        <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 4 }}>
+          {entry.body}
+        </div>
+      )}
+      <div className="hint">
+        Правки закрыты {dateTime(entry.editable_until)}. Запись осталась тем, что ты
+        думал тогда — дописать можно комментарием.
+      </div>
+    </div>
+  )
+}
+
+function Line({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: 'flex', gap: 10 }}>
-      <span className="hint" style={{ width: 80 }}>
+      <span className="hint" style={{ width: 70, flexShrink: 0 }}>
         {label}
       </span>
       <span style={{ fontSize: 13 }}>{value}</span>
+    </div>
+  )
+}
+
+export function Comments({ entry }: { entry: DiaryEntry }) {
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+
+  const send = useMutation({
+    mutationFn: (body: string) => api.post(`/entries/${entry.id}/comments`, { body }),
+    onSuccess: () => {
+      setText('')
+      setError('')
+      qc.invalidateQueries({ queryKey: ['diary'] })
+      qc.invalidateQueries({ queryKey: ['today'] })
+    },
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : 'Не получилось.'),
+  })
+
+  return (
+    <div style={{ marginTop: 16, borderTop: '1px solid #232320', paddingTop: 13 }}>
+      <div className="klabel" style={{ marginBottom: 9 }}>
+        Комментарии
+      </div>
+      {entry.comments.map((item) => (
+        <div key={item.id} style={{ marginBottom: 9 }}>
+          <div className="hint">{dateTime(item.created_at)}</div>
+          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{item.body}</div>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={2}
+          placeholder="Дописать к записи"
+          style={{ flex: 1, resize: 'vertical' }}
+        />
+        <button
+          onClick={() => send.mutate(text.trim())}
+          disabled={send.isPending || !text.trim()}
+          style={{ fontSize: 12, padding: '6px 12px' }}
+        >
+          Добавить
+        </button>
+      </div>
+      {error && (
+        <div className="err" style={{ marginTop: 8 }}>
+          {error}
+        </div>
+      )}
     </div>
   )
 }

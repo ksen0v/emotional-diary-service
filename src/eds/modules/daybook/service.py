@@ -318,13 +318,21 @@ async def _close(
     return row
 
 
-def admission_out(row: TradingDay | None, check_at: dt.datetime | None) -> dict | None:
+def admission_out(row: TradingDay | None, check) -> dict | None:
+    """Допуск дня вместе с тем, какие ответы просадили балл.
+
+    Просадившие ответы нужны экрану «нет допуска»: он открывается и после
+    перезагрузки страницы, а не только сразу после чека, и без них там
+    остаётся одно число без объяснения.
+    """
     if row is None or row.admission is None:
         return None
     return {
         "verdict": row.admission,
         "score": row.check_score,
-        "checked_at": check_at,
+        "max_score": questions.MAX_SCORE,
+        "checked_at": check.created_at if check else None,
+        "weak": questions.weak_answers(check.answers) if check else [],
     }
 
 

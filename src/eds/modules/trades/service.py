@@ -334,6 +334,7 @@ async def day_counters(s: AsyncSession, user_id: uuid.UUID, day: dt.date) -> dic
     totals_row = await repo.totals(s, user_id, (day, day), None)
     points = await curve(s, user_id, day)
     returns = await repo.day_returns(s, user_id, day)
+    summary = (await repo.day_summaries(s, user_id, day, day)).get(day)
 
     equity = points[-1].equity_pct if points else Decimal("0")
     peak = points[-1].peak_pct if points else Decimal("0")
@@ -344,6 +345,10 @@ async def day_counters(s: AsyncSession, user_id: uuid.UUID, day: dt.date) -> dic
         "significant_trades": totals_row["significant_count"],
         "violations": totals_row["violations_count"],
         "unmarked": totals_row["unmarked_count"],
+        "coverage_pct": quantize_pct(totals_row["coverage_pct"]),
+        "emotion_cost_usd": quantize_money(
+            summary["emotion_cost_usd"] if summary else Decimal("0")
+        ),
         "loss_streak": normalize.loss_streak(returns),
         "equity_pct": quantize_pct(equity),
         "peak_pct": quantize_pct(peak),

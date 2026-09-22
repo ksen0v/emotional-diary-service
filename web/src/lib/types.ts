@@ -216,7 +216,9 @@ export type MarkedOut = {
 export type Admission = {
   verdict: 'green' | 'red' | 'denied'
   score: number | null
+  max_score: number
   checked_at: string | null
+  weak: { id: string; short: string; points: number; max: number }[]
 }
 
 export type DayCounters = {
@@ -224,6 +226,8 @@ export type DayCounters = {
   significant_trades: number
   violations: number
   unmarked: number
+  coverage_pct: string
+  emotion_cost_usd: string
   loss_streak: number
   equity_pct: string
   peak_pct: string
@@ -268,6 +272,14 @@ export type Today = {
     required_for_next_session: boolean
   }
   counters: DayCounters
+  yesterday: {
+    day: string
+    trades: number
+    violations: number
+    profit_usd: string
+    admission: 'green' | 'red' | 'denied' | null
+    review_state: string
+  }
   source: TodaySource | null
   attention: { code: string; count: number; message: string }[]
   thresholds: { pass_score: number; min_score: number }
@@ -280,6 +292,7 @@ export type PremarketQuestion = {
   min: number
   max: number
   labels: Record<string, string>
+  hint: string
   inverted: boolean
 }
 
@@ -327,11 +340,16 @@ export type DayFacts = {
   trades: number
   violations: number
   unmarked: number
+  coverage_pct: string
   profit_usd: string
   account_return_pct: string
+  emotion_cost_usd: string
   admission: 'green' | 'red' | 'denied' | null
   check_score: number | null
   review_state: string
+  rules_fired: number
+  locks: number
+  locks_kept: number
   counted_in_streak: boolean | null
 }
 
@@ -351,7 +369,10 @@ export type PeriodFacts = {
   violations_gain_usd: string
   days_without_admission: number
   days_with_trades: number
-  lock_compliance_pct: string | null
+  tags: { tag: string; days: number }[]
+  locks: number
+  locks_kept: number
+  rules_fired: number
   counted_in_streak: boolean | null
   confidence: { enough_data: boolean; days_available: number; days_required: number }
 }

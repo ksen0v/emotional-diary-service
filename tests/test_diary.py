@@ -169,6 +169,10 @@ async def test_day_facts_come_from_trades_and_admission(app_client) -> None:
     assert float(facts["profit_usd"]) == -84.20
     assert facts["admission"] == "green"
     assert facts["check_score"] == 25
+    # Покрытие и цена эмоций считаются и на уровне дня: они стоят в клетке
+    # календаря и в карточке дня, а не только в недельных метриках.
+    assert facts["coverage_pct"] == "0.00"
+    assert float(facts["emotion_cost_usd"]) == 0
     # Стрик появится на шаге 7: null, а не false.
     assert facts["counted_in_streak"] is None
 
@@ -208,7 +212,11 @@ async def test_week_facts_carry_the_metrics_from_the_spec(app_client) -> None:
     assert facts["violations_profitable"] == 1
     # Сделки были, а чек не проходился — день считается без допуска (ТЗ 5.2).
     assert facts["days_without_admission"] == 1
-    assert facts["lock_compliance_pct"] is None
+    # Блокировок нет не потому, что «не считаем», а потому что движка ещё нет:
+    # честные нули, по которым видно, что срабатываний не было (шаг 9).
+    assert facts["locks"] == 0
+    assert facts["locks_kept"] == 0
+    assert facts["rules_fired"] == 0
 
 
 async def test_week_entry_snaps_to_monday(app_client) -> None:

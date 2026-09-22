@@ -4,6 +4,7 @@
 """
 
 import os
+import uuid
 
 from sqlalchemy import text
 
@@ -57,7 +58,9 @@ async def test_publish_and_consume(factory, monkeypatch) -> None:
 
 async def test_dedup_key_blocks_second_publish(factory) -> None:
     async with factory() as s:
-        key = f"test-dedup-{os.getpid()}"
+        # Ключ уникален на прогон: события не чистятся, и ключ из прошлого
+        # запуска отсёк бы первую публикацию — тест падал бы со второго раза.
+        key = f"test-dedup-{uuid.uuid4()}"
         first = await bus.publish(s, ev.PLATFORM_TEST_PING, {"n": 1}, dedup_key=key)
         await s.commit()
         second = await bus.publish(s, ev.PLATFORM_TEST_PING, {"n": 2}, dedup_key=key)

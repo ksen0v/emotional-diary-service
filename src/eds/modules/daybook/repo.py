@@ -4,7 +4,7 @@ import datetime as dt
 import uuid
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.modules.daybook.models import (
@@ -307,3 +307,27 @@ async def days_in_range(
         .order_by(TradingDay.day)
     )
     return list(res.scalars())
+
+
+async def tag_counts_in_range(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.date, until: dt.date
+) -> list[tuple[str, int]]:
+    """Ментальные теги дней периода со счётчиком дней.
+
+    Нужны недельной и месячной карточке: «Недосып · 3 дня» — это и есть
+    главное топливо будущей аналитики (ТЗ 5.3), и оно должно быть видно
+    в дневнике, а не только в отчёте, которого пока нет.
+    """
+    res = await s.execute(
+        select(EntryTag.tag, func.count())
+        .join(Entry, Entry.id == EntryTag.entry_id)
+        .where(
+            Entry.user_id == user_id,
+            Entry.level == "day",
+            Entry.period_start >= since,
+            Entry.period_start <= until,
+        )
+        .group_by(EntryTag.tag)
+        .order_by(func.count().desc(), EntryTag.tag)
+    )
+    return [(row[0], row[1]) for row in res]

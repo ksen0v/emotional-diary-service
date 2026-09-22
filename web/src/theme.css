@@ -13,6 +13,9 @@
   --warn: #c9a76a;
   --bad: #e4897a;
   --accent: #7fa0c9;
+  /* Фиолетовый зарезервирован под «без допуска»: это не тревога и не норма,
+     а отдельное состояние дня, и путать его с красным нельзя. */
+  --violet: #9a80c0;
 }
 
 * { box-sizing: border-box; }
@@ -87,3 +90,61 @@ button.primary { background: #28281f; border-color: #3a3a33; color: var(--fg); }
 .err { color: var(--bad); font-size: 13px; }
 .ok-text { color: var(--ok); font-size: 13px; }
 .hint { color: var(--faint); font-size: 12px; line-height: 1.6; }
+
+/* Поля ввода и кнопки из прототипа. Главное действие на экране — залитая
+   акцентная кнопка: её видно сразу, и на экране она всегда одна. */
+textarea {
+  padding: 11px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+}
+textarea:focus { outline: none; border-color: #4a4a42; }
+
+button.cta {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #141413;
+  font-weight: 500;
+  padding: 13px 22px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+button.cta:hover:not(:disabled) { background: #a3bcda; border-color: #a3bcda; color: #141413; }
+button.cta:disabled { background: #3a3a33; border-color: #3a3a33; color: #6a6860; }
+
+.chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  color: var(--dim);
+}
+
+/* Клетка календаря дневника. Высота фиксирована, чтобы месяц не «дышал»
+   от того, был ли в дне результат. */
+.cell {
+  height: 64px;
+  border-radius: 8px;
+  padding: 6px 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  font-family: inherit;
+}
+
+/* Бейдж в сайдбаре: число неразмеченных сделок. */
+.badge {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: #33332e;
+  color: var(--dim);
+}

@@ -7,10 +7,10 @@ import { dateTime } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
-const SECTIONS = [
+const SECTIONS: { to: string; label: string; badge?: 'unmarked' }[] = [
   { to: '/today', label: 'Сегодня' },
   { to: '/diary', label: 'Дневник' },
-  { to: '/trades', label: 'Сделки' },
+  { to: '/trades', label: 'Сделки', badge: 'unmarked' },
   { to: '/incidents', label: 'Инциденты' },
   { to: '/rules', label: 'Правила' },
 ]
@@ -19,6 +19,8 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   const setMe = useSetMe()
   const navigate = useNavigate()
   const today = useToday()
+  const unmarked =
+    today.data?.attention.find((item) => item.code === 'unmarked_trades')?.count ?? 0
 
   async function logout() {
     await api.post('/auth/logout')
@@ -50,6 +52,11 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
             className={({ isActive }) => (isActive ? 'nav on' : 'nav')}
           >
             {s.label}
+            {/* Бейдж на «Сделках» — количество неразмеченных. Больше бейджей
+                не нужно: их станет много, и они перестанут работать. */}
+            {s.badge === 'unmarked' && unmarked > 0 && (
+              <span className="badge">{unmarked}</span>
+            )}
           </NavLink>
         ))}
         <span className="nav-dim" title="Раздел появится, когда наберётся история">
@@ -74,16 +81,22 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           }}
         >
           <Admission today={today.data} />
-          <span style={{ fontSize: 13, color: 'var(--faint)' }} title="Стрик появится на шаге 7">
-            стрик —
+          <span
+            style={{ fontSize: 13, color: 'var(--dim)' }}
+            title="Стрик появится на шаге 7"
+          >
+            Стрик <span className="mono" style={{ color: 'var(--faint)' }}>—</span>
           </span>
           <Sync today={today.data} />
-          <span style={{ fontSize: 13, color: 'var(--faint)' }}>
+          <div style={{ flexGrow: 1 }} />
+          <span style={{ fontSize: 13, color: 'var(--dim)' }}>
             {today.data?.source?.account ?? 'счёт не выбран'}
           </span>
-          <div style={{ flexGrow: 1 }} />
-          <span style={{ fontSize: 13, color: 'var(--dim)' }}>{me.user.email}</span>
-          <button onClick={logout} style={{ fontSize: 12, padding: '6px 12px' }}>
+          <button
+            onClick={logout}
+            title={me.user.email}
+            style={{ fontSize: 12, padding: '5px 11px' }}
+          >
             Выйти
           </button>
         </div>
@@ -135,18 +148,35 @@ function Admission({ today }: { today: Today | undefined }) {
 function Sync({ today }: { today: Today | undefined }) {
   const source = today?.source
   if (!source) {
-    return (
-      <span style={{ fontSize: 13, color: 'var(--faint)' }}>синк: нет источника</span>
-    )
+    return <span style={{ fontSize: 13, color: 'var(--faint)' }}>Синк нет источника</span>
   }
   // Если синк умер, защиты нет — это должно быть заметно, поэтому ошибка
-  // показывается цветом, а не текстом мелким шрифтом.
+  // показывается цветом, а не мелким текстом.
   return (
     <span
       style={{ fontSize: 13, color: source.stale ? 'var(--bad)' : 'var(--dim)' }}
       title={source.last_event_at ? `последняя сверка ${dateTime(source.last_event_at)}` : ''}
     >
-      синк: {source.stale ? 'ошибка' : source.last_event_at ? dateTime(source.last_event_at) : 'ещё не было'}
+      Синк{' '}
+      <span className="mono">
+        {source.stale
+          ? 'ошибка'
+          : source.last_event_at
+            ? ago(source.last_event_at)
+            : 'ещё не было'}
+      </span>
     </span>
   )
+}
+
+// «12 сек назад» вместо метки времени: вопрос к этому полю всегда один —
+// давно ли, — и отвечать на него вычитанием в голове не надо.
+function ago(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  if (seconds < 60) return `${seconds} сек назад`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} мин назад`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} ч назад`
+  return `${Math.round(hours / 24)} дн назад`
 }

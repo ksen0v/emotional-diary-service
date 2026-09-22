@@ -2,12 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api } from '../lib/api'
 import type { DiaryItem, DiaryList } from '../lib/types'
-import { EntryEditor } from '../ui/EntryEditor'
+import { Comments, TagChip } from '../ui/EntryEditor'
+import { useEntryDraft, usePresets } from '../ui/entry'
 import { money, pct } from '../ui/format'
+import { useToday } from './TodayPage'
 
-// Э-09: переключатель уровня. День — календарь месяца, неделя и месяц —
-// карточка периода с метриками ТЗ. Разные вопросы требуют разной формы:
-// «что было в среду» — это календарь, «как прошла неделя» — это цифры.
+// Э-09 по прототипу: календарь — постоянная левая колонка на всех уровнях,
+// переключатель меняет только правую панель. Календарь не исчезает потому,
+// что он и есть способ навигации: клик по клетке выбирает период любого уровня.
 const LEVELS = [
   { key: 'day', label: 'День' },
   { key: 'week', label: 'Неделя' },
@@ -16,182 +18,545 @@ const LEVELS = [
 
 type Level = (typeof LEVELS)[number]['key']
 
-const ADMISSION_COLOR: Record<string, string> = {
-  green: 'var(--ok)',
-  red: 'var(--warn)',
-  denied: 'var(--bad)',
+const WEEKDAYS = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс']
+const MONTHS = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+]
+const MONTHS_SHORT = [
+  'янв', 'фев', 'мар', 'апр', 'мая', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+]
+const WEEKDAYS_LONG = [
+  'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье',
+]
+
+// Цвет точки в клетке. Порядок проверок — это и есть смысл легенды:
+// «без допуска» важнее нарушения, потому что торговля без допуска сама
+// по себе инцидент, а нарушение внутри дня с допуском — часть работы.
+const DOT_LEGEND = [
+  { color: 'var(--ok)', label: 'зелёный' },
+  { color: 'var(--warn)', label: 'под риском' },
+  { color: 'var(--bad)', label: 'нарушение' },
+  { color: 'var(--violet)', label: 'без допуска' },
+  { color: '#4c4a44', label: 'вне рынка' },
+]
+
+function dotColor(facts: DiaryItem['facts'] | undefined): string {
+  if (!facts) return 'transparent'
+  const traded = facts.trades > 0
+  if (!traded && facts.admission === null) return '#4c4a44'
+  if (facts.admission === 'denied' || (facts.admission === null && traded)) {
+    return 'var(--violet)'
+  }
+  if (facts.violations > 0) return 'var(--bad)'
+  if (facts.admission === 'red') return 'var(--warn)'
+  return 'var(--ok)'
+}
+
+function iso(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+function parse(value: string): Date {
+  const [y, m, d] = value.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+function addDays(value: string, days: number): string {
+  const d = parse(value)
+  d.setDate(d.getDate() + days)
+  return iso(d)
+}
+function addMonths(value: string, months: number): string {
+  const d = parse(value)
+  return iso(new Date(d.getFullYear(), d.getMonth() + months, 1))
+}
+function startOfWeek(value: string): string {
+  const d = parse(value)
+  return addDays(value, -((d.getDay() + 6) % 7))
+}
+function startOfMonth(value: string): string {
+  const d = parse(value)
+  return iso(new Date(d.getFullYear(), d.getMonth(), 1))
+}
+function endOfMonth(value: string): string {
+  const d = parse(value)
+  return iso(new Date(d.getFullYear(), d.getMonth() + 1, 0))
+}
+function shortDate(value: string): string {
+  const d = parse(value)
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`
+}
+function longDate(value: string): string {
+  const d = parse(value)
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}, ${WEEKDAYS_LONG[(d.getDay() + 6) % 7]}`
 }
 
 export function DiaryPage() {
-  const [level, setLevel] = useState<Level>('day')
-  const [openDay, setOpenDay] = useState<string | null>(null)
+  const today = useToday()
+  const todayIso = today.data?.day ?? iso(new Date())
 
-  const diary = useQuery<DiaryList>({
-    queryKey: ['diary', level],
-    queryFn: () => api.get<DiaryList>(`/entries?level=${level}`),
+  const [level, setLevel] = useState<Level>('day')
+  const [sel, setSel] = useState<string | null>(null)
+  const selected = sel ?? todayIso
+  const month = startOfMonth(selected)
+
+  const calendar = useQuery<DiaryList>({
+    queryKey: ['diary', 'day', month],
+    queryFn: () =>
+      api.get<DiaryList>(
+        `/entries?level=day&from=${month}&to=${endOfMonth(month)}`,
+      ),
+    enabled: Boolean(today.data),
   })
 
-  const items = diary.data?.items ?? []
-  const selected = items.find((i) => i.period_start === openDay) ?? null
+  const weekStart = startOfWeek(selected)
+  const periodStart = level === 'week' ? weekStart : month
+  const period = useQuery<DiaryList>({
+    queryKey: ['diary', level, periodStart],
+    queryFn: () =>
+      api.get<DiaryList>(
+        `/entries?level=${level}&from=${periodStart}&to=${periodStart}`,
+      ),
+    enabled: level !== 'day' && Boolean(today.data),
+  })
+
+  const byDay = new Map((calendar.data?.items ?? []).map((i) => [i.period_start, i]))
+  const dayItem = byDay.get(selected) ?? null
+  const periodItem = level === 'day' ? dayItem : (period.data?.items[0] ?? null)
+
+  // ——— навигация ———
+  function step(direction: 1 | -1) {
+    if (level === 'month') {
+      const next = addMonths(month, direction)
+      setSel(direction < 0 ? next : minDate(endOfMonth(next), todayIso))
+      return
+    }
+    const days = level === 'week' ? 7 : 1
+    const next = addDays(selected, direction * days)
+    setSel(direction > 0 ? minDate(next, todayIso) : next)
+  }
+  const atEnd =
+    level === 'month'
+      ? month === startOfMonth(todayIso)
+      : level === 'week'
+        ? weekStart === startOfWeek(todayIso)
+        : selected === todayIso
+
+  const navLabel =
+    level === 'day'
+      ? shortDate(selected)
+      : level === 'week'
+        ? `${shortDate(weekStart)} — ${shortDate(addDays(weekStart, 6))}`
+        : `${MONTHS[parse(month).getMonth()]} ${parse(month).getFullYear()}`
+
+  function inSelection(day: string): boolean {
+    if (level === 'day') return day === selected
+    if (level === 'week') return day >= weekStart && day <= addDays(weekStart, 6)
+    return true
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1000 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         {LEVELS.map((l) => (
           <button
             key={l.key}
-            onClick={() => {
-              setLevel(l.key)
-              setOpenDay(null)
-            }}
+            onClick={() => setLevel(l.key)}
+            aria-pressed={level === l.key}
             className={level === l.key ? 'primary' : ''}
-            style={{ fontSize: 13, padding: '7px 14px' }}
+            style={{ fontSize: 13, padding: '7px 15px' }}
           >
             {l.label}
           </button>
         ))}
+        <div style={{ flexGrow: 1 }} />
+        <button
+          onClick={() => step(-1)}
+          aria-label="Предыдущий период"
+          style={{ width: 30, height: 30, padding: 0 }}
+        >
+          ‹
+        </button>
+        <span
+          className="mono"
+          style={{ fontSize: 13, minWidth: 210, textAlign: 'center' }}
+        >
+          {navLabel}
+        </span>
+        <button
+          onClick={() => step(1)}
+          disabled={atEnd}
+          aria-label="Следующий период"
+          style={{ width: 30, height: 30, padding: 0 }}
+        >
+          ›
+        </button>
+        <button
+          onClick={() => setSel(todayIso)}
+          style={{ marginLeft: 8, fontSize: 13, padding: '7px 13px' }}
+        >
+          Сегодня
+        </button>
       </div>
 
-      {diary.isLoading && <div className="hint">загрузка…</div>}
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <Calendar
+          month={month}
+          todayIso={todayIso}
+          byDay={byDay}
+          inSelection={inSelection}
+          onPick={(day) => {
+            setSel(day)
+            if (level === 'month') setLevel('day')
+          }}
+          hint={
+            level === 'day'
+              ? 'Клик по клетке открывает запись того дня. Будущие дни недоступны.'
+              : level === 'week'
+                ? 'Клик по любой клетке выбирает её неделю.'
+                : 'Клик по клетке открывает её день.'
+          }
+        />
 
-      {level === 'day' && (
-        <>
-          <Calendar items={items} openDay={openDay} onOpen={setOpenDay} />
-          {selected ? (
-            <>
-              <DayFactsCard item={selected} />
-              <EntryEditor
-                level="day"
-                periodStart={selected.period_start}
-                entry={selected.entry}
-              />
-            </>
-          ) : (
-            <div className="hint">Выбери день, чтобы прочитать или записать.</div>
+        <div
+          style={{
+            flexGrow: 1,
+            minWidth: 320,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 18,
+          }}
+        >
+          <PeriodCard
+            level={level}
+            selected={selected}
+            todayIso={todayIso}
+            weekStart={weekStart}
+            month={month}
+            item={periodItem}
+            loading={level === 'day' ? calendar.isLoading : period.isLoading}
+          />
+          {periodItem && (
+            <StateCard
+              level={level}
+              periodStart={periodItem.period_start}
+              item={periodItem}
+            />
           )}
-        </>
-      )}
-
-      {level !== 'day' &&
-        items.map((item) => (
-          <PeriodCard key={item.period_start} item={item} level={level} />
-        ))}
+        </div>
+      </div>
     </div>
   )
 }
 
+function minDate(a: string, b: string): string {
+  return a < b ? a : b
+}
+
 function Calendar({
-  items,
-  openDay,
-  onOpen,
+  month,
+  todayIso,
+  byDay,
+  inSelection,
+  onPick,
+  hint,
 }: {
-  items: DiaryItem[]
-  openDay: string | null
-  onOpen: (day: string) => void
+  month: string
+  todayIso: string
+  byDay: Map<string, DiaryItem>
+  inSelection: (day: string) => boolean
+  onPick: (day: string) => void
+  hint: string
 }) {
-  if (items.length === 0) return null
-  // items приходят от свежего к старому; календарь читается наоборот.
-  const days = [...items].reverse()
-  const first = new Date(days[0].period_start)
-  // Пустые клетки до первого числа, чтобы месяц встал по дням недели.
+  const first = parse(month)
+  const length = parse(endOfMonth(month)).getDate()
   const blanks = (first.getDay() + 6) % 7
 
+  let profit = 0
+  let daysWithTrades = 0
+  for (const item of byDay.values()) {
+    profit += Number(item.facts.profit_usd)
+    if (item.facts.trades > 0) daysWithTrades += 1
+  }
+
   return (
-    <div className="card" style={{ padding: '16px 18px' }}>
-      <div className="klabel" style={{ marginBottom: 12 }}>
-        {first.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+    <div className="card" style={{ width: 520, maxWidth: '100%', padding: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 12 }}>
+        <span style={{ fontSize: 14, fontWeight: 500 }}>
+          {MONTHS[first.getMonth()]} {first.getFullYear()}
+        </span>
+        <span className="mono hint" style={{ marginLeft: 'auto' }}>
+          {money(profit)} · {daysWithTrades} дней
+        </span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
-        {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((name) => (
-          <div key={name} className="hint" style={{ textAlign: 'center' }}>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+          gap: 6,
+          marginBottom: 6,
+        }}
+      >
+        {WEEKDAYS.map((name) => (
+          <div key={name} className="klabel" style={{ textAlign: 'center' }}>
             {name}
           </div>
         ))}
+      </div>
+
+      <div
+        style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 6 }}
+      >
         {Array.from({ length: blanks }).map((_, i) => (
           <div key={`blank-${i}`} />
         ))}
-        {days.map((item) => {
-          const day = new Date(item.period_start)
-          const open = item.period_start === openDay
-          const profit = Number(item.facts.profit_usd)
+        {Array.from({ length }, (_, i) => {
+          const day = `${month.slice(0, 8)}${String(i + 1).padStart(2, '0')}`
+          const item = byDay.get(day)
+          const future = day > todayIso
+          const on = inSelection(day) && !future
+          const value = item ? Number(item.facts.profit_usd) : 0
           return (
             <button
-              key={item.period_start}
-              onClick={() => onOpen(item.period_start)}
+              key={day}
+              className="cell"
+              onClick={() => onPick(day)}
+              disabled={future}
+              aria-label={longDate(day)}
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-start',
-                gap: 3,
-                padding: '7px 8px',
-                minHeight: 62,
-                borderColor: open ? 'var(--fg)' : 'var(--line-2)',
-                background: open ? 'var(--panel-2)' : undefined,
+                background: on ? '#26262f' : '#1f1f1c',
+                borderColor: on ? 'var(--accent)' : 'var(--line)',
               }}
             >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 3,
-                    background: item.facts.admission
-                      ? ADMISSION_COLOR[item.facts.admission]
-                      : 'var(--line-2)',
-                  }}
-                />
-                <span className="mono" style={{ fontSize: 12, color: 'var(--dim)' }}>
-                  {day.getDate()}
-                </span>
-                {item.entry && <span className="hint">·</span>}
-              </span>
-              {item.facts.trades > 0 && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span
                   className="mono"
+                  style={{ fontSize: 11, color: future ? '#5c5a54' : 'var(--fg)' }}
+                >
+                  {i + 1}
+                </span>
+                <span
                   style={{
-                    fontSize: 11,
-                    color: profit > 0 ? 'var(--ok)' : profit < 0 ? 'var(--bad)' : 'var(--dim)',
+                    width: 5,
+                    height: 5,
+                    borderRadius: 3,
+                    background: future ? 'transparent' : dotColor(item?.facts),
                   }}
+                />
+                {item?.entry && <span className="hint">·</span>}
+              </span>
+              <span style={{ flexGrow: 1 }} />
+              {item && item.facts.trades > 0 && (
+                <span
+                  className="mono"
+                  style={{ fontSize: 11, color: value < 0 ? 'var(--bad)' : 'var(--ok)' }}
                 >
                   {money(item.facts.profit_usd)}
-                </span>
-              )}
-              {item.facts.violations > 0 && (
-                <span style={{ fontSize: 11, color: 'var(--bad)' }}>
-                  ! {item.facts.violations}
                 </span>
               )}
             </button>
           )
         })}
       </div>
-      <div className="hint" style={{ marginTop: 10 }}>
-        Точка — допуск дня, «·» — есть запись, «!» — нарушения.
+
+      <div
+        style={{
+          display: 'flex',
+          gap: 14,
+          flexWrap: 'wrap',
+          marginTop: 16,
+          paddingTop: 14,
+          borderTop: '1px solid #232320',
+        }}
+      >
+        {DOT_LEGEND.map((entry) => (
+          <span
+            key={entry.label}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              color: 'var(--faint)',
+            }}
+          >
+            <span
+              style={{ width: 5, height: 5, borderRadius: 3, background: entry.color }}
+            />
+            {entry.label}
+          </span>
+        ))}
+      </div>
+      <div className="hint" style={{ marginTop: 12 }}>
+        {hint} «·» — есть запись.
       </div>
     </div>
   )
 }
 
-function DayFactsCard({ item }: { item: DiaryItem }) {
-  const facts = item.facts
+type RowOpts = {
+  sub?: string
+  color?: string
+  indent?: boolean
+  first?: boolean
+  labelColor?: string
+}
+
+function Row({ label, value, opts = {} }: { label: string; value: string; opts?: RowOpts }) {
   return (
-    <div className="card" style={{ padding: '14px 18px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-      <Stat
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        padding: opts.indent ? '4px 0 4px 16px' : '9px 0',
+        borderTop:
+          opts.first || opts.indent ? '1px solid transparent' : '1px solid #232320',
+      }}
+    >
+      <span
+        style={{
+          fontSize: opts.indent ? 12 : 13,
+          color: opts.labelColor ?? (opts.indent ? 'var(--faint)' : 'var(--dim)'),
+        }}
+      >
+        {label}
+      </span>
+      <span
+        className="mono"
+        style={{
+          marginLeft: 'auto',
+          fontSize: opts.indent ? 13 : 17,
+          color: opts.color ?? 'var(--fg)',
+        }}
+      >
+        {value}
+      </span>
+      {opts.sub && (
+        <span className="mono hint" style={{ marginLeft: 9 }}>
+          {opts.sub}
+        </span>
+      )}
+    </div>
+  )
+}
+
+const ADMISSION_WORD: Record<string, [string, string]> = {
+  green: ['зелёный', 'var(--ok)'],
+  red: ['под риском', 'var(--warn)'],
+  denied: ['нет допуска', 'var(--bad)'],
+}
+
+function PeriodCard({
+  level,
+  selected,
+  todayIso,
+  weekStart,
+  month,
+  item,
+  loading,
+}: {
+  level: Level
+  selected: string
+  todayIso: string
+  weekStart: string
+  month: string
+  item: DiaryItem | null
+  loading: boolean
+}) {
+  const title =
+    level === 'day'
+      ? longDate(selected)
+      : level === 'week'
+        ? `Неделя ${shortDate(weekStart)} — ${shortDate(addDays(weekStart, 6))}`
+        : `${MONTHS[parse(month).getMonth()]} ${parse(month).getFullYear()}`
+
+  const f = item?.facts
+  const sub =
+    level === 'day'
+      ? selected === todayIso
+        ? 'сегодня'
+        : ''
+      : `${f?.days_with_trades ?? 0} торговых дней`
+
+  return (
+    <div className="card" style={{ padding: '20px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        <span className="serif" style={{ fontSize: 24 }}>
+          {title}
+        </span>
+        <span className="mono hint" style={{ marginLeft: 'auto' }}>
+          {sub}
+        </span>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        {loading && <div className="hint">загрузка…</div>}
+        {!loading && f && level === 'day' && <DayRows facts={f} />}
+        {!loading && f && level !== 'day' && <PeriodRows facts={f} />}
+      </div>
+    </div>
+  )
+}
+
+function DayRows({ facts }: { facts: DiaryItem['facts'] }) {
+  if (facts.trades === 0 && facts.admission === null) {
+    return (
+      <>
+        <Row label="Статус" value="вне рынка" opts={{ first: true, color: 'var(--dim)' }} />
+        <Row label="Сделок" value="0" />
+        <Row label="Чек" value="не проходился" opts={{ color: 'var(--dim)' }} />
+      </>
+    )
+  }
+  const [word, color] = facts.admission
+    ? ADMISSION_WORD[facts.admission]
+    : ['чека не было', 'var(--dim)']
+  return (
+    <>
+      <Row
         label="Допуск"
-        value={
-          facts.admission
-            ? `${facts.admission === 'green' ? 'зелёный' : facts.admission === 'red' ? 'под риском' : 'нет'}${
-                facts.check_score !== null ? ` (${facts.check_score})` : ''
-              }`
-            : 'чека не было'
-        }
+        value={word}
+        opts={{
+          first: true,
+          color,
+          sub: facts.check_score !== null ? `${facts.check_score} из 25` : '',
+        }}
       />
-      <Stat label="Сделок" value={String(facts.trades)} />
-      <Stat label="Нарушений" value={String(facts.violations)} />
-      <Stat label="Без разметки" value={String(facts.unmarked)} />
-      <Stat label="Результат" value={money(facts.profit_usd)} />
-      <Stat label="От депозита" value={pct(facts.account_return_pct)} />
-      <Stat
+      <Row
+        label="PnL"
+        value={money(facts.profit_usd)}
+        opts={{
+          color: Number(facts.profit_usd) < 0 ? 'var(--bad)' : 'var(--ok)',
+          sub: pct(facts.account_return_pct),
+        }}
+      />
+      <Row
+        label="Сделок"
+        value={String(facts.trades)}
+        opts={{ sub: facts.unmarked > 0 ? `${facts.unmarked} не размечено` : '' }}
+      />
+      <Row
+        label="Нарушений"
+        value={String(facts.violations)}
+        opts={{ color: facts.violations > 0 ? 'var(--bad)' : undefined }}
+      />
+      <Row
+        label="Покрытие разметкой"
+        value={`${Number(facts.coverage_pct).toFixed(0)}%`}
+      />
+      <Row
+        label="Цена эмоций"
+        value={money(facts.emotion_cost_usd)}
+        opts={{ color: Number(facts.emotion_cost_usd) < 0 ? 'var(--bad)' : undefined }}
+      />
+      <Row
+        label="Блокировок"
+        value={String(facts.locks)}
+        opts={{ sub: facts.locks > 0 ? `${facts.locks_kept} соблюдено` : 'шаг 9' }}
+      />
+      <Row
         label="Разбор"
         value={
           facts.review_state === 'done'
@@ -200,112 +565,230 @@ function DayFactsCard({ item }: { item: DiaryItem }) {
               ? 'не заполнен'
               : '—'
         }
+        opts={{
+          color:
+            facts.review_state === 'done'
+              ? 'var(--ok)'
+              : facts.review_state === 'pending'
+                ? 'var(--warn)'
+                : 'var(--dim)',
+        }}
       />
-    </div>
+    </>
   )
 }
 
-function PeriodCard({ item, level }: { item: DiaryItem; level: Level }) {
-  const f = item.facts
-  const from = new Date(item.period_start)
-  const to = new Date(item.period_end)
-  const title =
-    level === 'week'
-      ? `Неделя ${from.getDate()}–${to.getDate()} ${to.toLocaleDateString('ru-RU', { month: 'long' })}`
-      : from.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
+function PeriodRows({ facts }: { facts: DiaryItem['facts'] }) {
+  const marked = facts.trades - facts.unmarked
+  const clean = marked - facts.violations
+  const locks = facts.locks ?? 0
+  const kept = facts.locks_kept ?? 0
+  return (
+    <>
+      <Row
+        label="Коэффициент дисциплины"
+        value={facts.discipline_pct === null ? '—' : `${Number(facts.discipline_pct).toFixed(0)}%`}
+        opts={{ first: true, sub: marked > 0 ? `${clean} из ${marked}` : 'нечего считать' }}
+      />
+      <Row
+        label="Покрытие разметкой"
+        value={`${Number(facts.coverage_pct ?? 0).toFixed(0)}%`}
+        opts={{ color: Number(facts.coverage_pct ?? 0) < 80 ? 'var(--warn)' : undefined }}
+      />
+      <Row
+        label="PnL"
+        value={money(facts.profit_usd)}
+        opts={{ color: Number(facts.profit_usd) < 0 ? 'var(--bad)' : 'var(--ok)' }}
+      />
+      <Row
+        label="Цена эмоций"
+        value={money(facts.emotion_cost_usd ?? '0')}
+        opts={{ color: Number(facts.emotion_cost_usd ?? 0) < 0 ? 'var(--bad)' : undefined }}
+      />
+      <Row
+        label="из них слито"
+        value={money(facts.lost_on_emotions_usd ?? '0')}
+        opts={{ indent: true }}
+      />
+      <Row
+        label="нарушений в плюс"
+        value={
+          (facts.violations_profitable ?? 0) > 0
+            ? `${facts.violations_profitable} · ${money(facts.violations_gain_usd ?? '0')}`
+            : '0'
+        }
+        opts={{
+          indent: true,
+          labelColor: (facts.violations_profitable ?? 0) > 0 ? 'var(--warn)' : undefined,
+          color: (facts.violations_profitable ?? 0) > 0 ? 'var(--warn)' : 'var(--dim)',
+        }}
+      />
+      <Row
+        label="Compliance блокировок"
+        value={locks === 0 ? '100%' : `${Math.round((kept / locks) * 100)}%`}
+        opts={{
+          color: locks === 0 || kept === locks ? 'var(--ok)' : 'var(--warn)',
+          sub: locks > 0 ? `${kept} из ${locks}` : 'блокировок не было',
+        }}
+      />
+      <Row
+        label="Дней без допуска"
+        value={String(facts.days_without_admission ?? 0)}
+        opts={{
+          color: (facts.days_without_admission ?? 0) > 0 ? 'var(--violet)' : undefined,
+        }}
+      />
+      {facts.confidence && !facts.confidence.enough_data && (
+        <div className="hint" style={{ marginTop: 8 }}>
+          Мало данных: {facts.confidence.days_available} торговых дней из{' '}
+          {facts.confidence.days_required}. Выводы делать рано.
+        </div>
+      )}
+    </>
+  )
+}
+
+const STATE_LABEL: Record<Level, string> = {
+  day: 'Состояние за день',
+  week: 'Состояние за неделю',
+  month: 'Состояние за месяц',
+}
+
+function StateCard({
+  level,
+  periodStart,
+  item,
+}: {
+  level: Level
+  periodStart: string
+  item: DiaryItem
+}) {
+  const presets = usePresets()
+  const draft = useEntryDraft({ level, periodStart, entry: item.entry })
+  const [ownTag, setOwnTag] = useState('')
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div className="card" style={{ padding: '18px 20px' }}>
-        <div style={{ fontSize: 15, marginBottom: 14 }}>{title}</div>
-        {f.trades === 0 ? (
-          <div className="hint">Сделок за период нет.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-            <Row
-              label="Коэффициент дисциплины"
-              value={f.discipline_pct === null ? '—' : `${Number(f.discipline_pct).toFixed(0)}%`}
-              note={`${f.trades - (f.unmarked ?? 0)} размеченных из ${f.trades}`}
-            />
-            <Row
-              label="Покрытие разметкой"
-              value={`${Number(f.coverage_pct ?? 0).toFixed(0)}%`}
-              color={Number(f.coverage_pct ?? 0) < 80 ? 'var(--warn)' : undefined}
-            />
-            <Row
-              label="Цена эмоций"
-              value={money(f.emotion_cost_usd ?? '0')}
-              color={Number(f.emotion_cost_usd ?? 0) < 0 ? 'var(--bad)' : undefined}
-            />
-            <Row
-              label="из них слито"
-              value={money(f.lost_on_emotions_usd ?? '0')}
-              indent
-            />
-            <Row
-              label="нарушений в плюс"
-              value={`${f.violations_profitable ?? 0}  (${money(f.violations_gain_usd ?? '0')})`}
-              color={(f.violations_profitable ?? 0) > 0 ? 'var(--warn)' : undefined}
-              indent
-            />
-            <Row
-              label="Compliance блокировок"
-              value={f.lock_compliance_pct === null ? '— (шаг 9)' : `${f.lock_compliance_pct}%`}
-            />
-            <Row label="Дней без допуска" value={String(f.days_without_admission ?? 0)} />
-            <Row label="Результат" value={money(f.profit_usd)} />
-            {f.confidence && !f.confidence.enough_data && (
-              <div className="hint" style={{ marginTop: 4 }}>
-                Мало данных: {f.confidence.days_available} торговых дней из{' '}
-                {f.confidence.days_required}. Выводы делать рано.
-              </div>
-            )}
+    <div className="card" style={{ padding: '18px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 12 }}>
+        <span className="klabel">{STATE_LABEL[level]}</span>
+        <span className="mono hint" style={{ marginLeft: 'auto' }}>
+          {draft.saveHint}
+        </span>
+      </div>
+
+      {draft.editable && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            flexWrap: 'wrap',
+            marginBottom: 14,
+          }}
+        >
+          <span className="hint">Оценка</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[1, 2, 3, 4, 5].map((value) => (
+              <button
+                key={value}
+                onClick={() => draft.setScore(draft.score === value ? null : value)}
+                aria-pressed={draft.score === value}
+                className={draft.score === value ? 'primary mono' : 'mono'}
+                style={{ width: 32, height: 30, padding: 0, fontSize: 13 }}
+              >
+                {value}
+              </button>
+            ))}
           </div>
+          <span className="hint">Статус</span>
+          <select
+            value={draft.status}
+            onChange={(e) => draft.setStatus(e.target.value)}
+            style={{ fontSize: 13, padding: '6px 9px' }}
+            aria-label="Статус периода"
+          >
+            <option value="">не выбран</option>
+            {(presets.data?.statuses ?? []).map((preset) => (
+              <option key={preset} value={preset}>
+                {preset}
+              </option>
+            ))}
+            {draft.status && !(presets.data?.statuses ?? []).includes(draft.status) && (
+              <option value={draft.status}>{draft.status}</option>
+            )}
+          </select>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+        {level === 'day'
+          ? Array.from(new Set([...(presets.data?.tags ?? []), ...draft.tags])).map(
+              (tag) => (
+                <TagChip
+                  key={tag}
+                  label={tag}
+                  on={draft.tags.includes(tag)}
+                  onClick={() => draft.toggleTag(tag)}
+                  readonly={!draft.editable}
+                />
+              ),
+            )
+          : (item.facts.tags ?? []).map((row) => (
+              <TagChip
+                key={row.tag}
+                label={`${row.tag} · ${row.days} ${row.days === 1 ? 'день' : 'дней'}`}
+                on={false}
+                readonly
+              />
+            ))}
+        {level !== 'day' && (item.facts.tags ?? []).length === 0 && (
+          <span className="hint">Ментальных тегов за период не ставилось.</span>
         )}
       </div>
-      <EntryEditor level={level} periodStart={item.period_start} entry={item.entry} />
-    </div>
-  )
-}
 
-function Row({
-  label,
-  value,
-  note,
-  color,
-  indent,
-}: {
-  label: string
-  value: string
-  note?: string
-  color?: string
-  indent?: boolean
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-      <span
-        className="hint"
-        style={{ width: 210, paddingLeft: indent ? 16 : 0, flexShrink: 0 }}
-      >
-        {label}
-      </span>
-      <span className="mono" style={{ fontSize: 13, color: color ?? 'var(--fg)' }}>
-        {value}
-      </span>
-      {note && <span className="hint">{note}</span>}
-    </div>
-  )
-}
+      {level === 'day' && draft.editable && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          <input
+            value={ownTag}
+            onChange={(e) => setOwnTag(e.target.value)}
+            placeholder="свой тег"
+            style={{ maxWidth: 190, fontSize: 13 }}
+          />
+          <button
+            onClick={() => {
+              draft.addTag(ownTag)
+              setOwnTag('')
+            }}
+            style={{ fontSize: 12, padding: '6px 12px' }}
+          >
+            Добавить
+          </button>
+        </div>
+      )}
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="klabel" style={{ marginBottom: 4 }}>
-        {label}
-      </div>
-      <div className="mono" style={{ fontSize: 13 }}>
-        {value}
-      </div>
+      {draft.editable ? (
+        <textarea
+          value={draft.note}
+          onChange={(e) => draft.setNote(e.target.value)}
+          rows={4}
+          placeholder="Что происходило с тобой в этот период"
+          style={{ width: '100%', minHeight: 92, resize: 'vertical' }}
+        />
+      ) : (
+        <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>
+          {item.entry?.body || <span className="hint">Записи за этот период нет.</span>}
+        </div>
+      )}
+
+      {draft.error && (
+        <div className="err" style={{ marginTop: 10 }}>
+          {draft.error}
+        </div>
+      )}
+
+      {item.entry && (!item.entry.editable || item.entry.comments.length > 0) && (
+        <Comments entry={item.entry} />
+      )}
     </div>
   )
 }
