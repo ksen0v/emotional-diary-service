@@ -1,9 +1,29 @@
+import { useEffect, useState } from 'react'
 import type { Curve } from '../lib/types'
 import { pct, pctPlain, time } from './format'
+
+// Ширина, которую кривой реально отдали. Нужна потому, что рисовать в жёсткий
+// viewBox и растягивать его нельзя: SVG сохраняет пропорции и центрирует
+// содержимое, из-за чего на широком экране кривая оказывалась в середине,
+// а по краям оставалась пустота.
+function useWidth(): [(node: HTMLDivElement | null) => void, number] {
+  const [node, setNode] = useState<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(640)
+  useEffect(() => {
+    if (!node) return
+    const observer = new ResizeObserver(([entry]) => {
+      setWidth(Math.max(240, Math.round(entry.contentRect.width)))
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [node])
+  return [setNode, width]
+}
 
 // Кривая дня — реконструкция из закрытых сделок, а не биржевой график:
 // точка появляется на каждой сделке, а не через равные промежутки времени.
 export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
+  const [boxRef, width] = useWidth()
   const points = curve.points
   // bare — кривая живёт внутри чужой карточки (главный экран собран так
   // в прототипе: плитки метрик и кривая — один блок, а не два).
@@ -21,7 +41,6 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
     )
   }
 
-  const width = 640
   const height = 130
   const pad = 8
   const values = points.map((p) => Number(p.equity_pct))
@@ -55,29 +74,33 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
         )}
       </div>
 
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        style={{ width: '100%', height, display: 'block' }}
-        role="img"
-        aria-label={`Кривая дня, итог ${pct(last.equity_pct)}`}
-      >
-        <line x1={0} y1={zeroY} x2={width} y2={zeroY} stroke="#33332e" strokeWidth={1} />
-        <polyline
-          points={line}
-          fill="none"
-          stroke={Number(last.equity_pct) < 0 ? 'var(--bad)' : 'var(--ok)'}
-          strokeWidth={1.5}
-        />
-        {points.map((p, i) => (
-          <circle
-            key={p.trade_id}
-            cx={x(i)}
-            cy={y(Number(p.equity_pct))}
-            r={2.5}
-            fill={Number(last.equity_pct) < 0 ? 'var(--bad)' : 'var(--ok)'}
+      <div ref={boxRef}>
+        <svg
+          width={width}
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          style={{ display: 'block' }}
+          role="img"
+          aria-label={`Кривая дня, итог ${pct(last.equity_pct)}`}
+        >
+          <line x1={0} y1={zeroY} x2={width} y2={zeroY} stroke="#33332e" strokeWidth={1} />
+          <polyline
+            points={line}
+            fill="none"
+            stroke={Number(last.equity_pct) < 0 ? 'var(--bad)' : 'var(--ok)'}
+            strokeWidth={1.5}
           />
-        ))}
-      </svg>
+          {points.map((p, i) => (
+            <circle
+              key={p.trade_id}
+              cx={x(i)}
+              cy={y(Number(p.equity_pct))}
+              r={2.5}
+              fill={Number(last.equity_pct) < 0 ? 'var(--bad)' : 'var(--ok)'}
+            />
+          ))}
+        </svg>
+      </div>
 
       <div className="hint" style={{ display: 'flex', justifyContent: 'space-between' }}>
         <span>{time(points[0].at)}</span>

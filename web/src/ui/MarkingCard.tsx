@@ -123,6 +123,7 @@ export function MarkingCard() {
                   style={{
                     width: 92,
                     textAlign: 'right',
+                    whiteSpace: 'nowrap',
                     color: tag.is_violation ? 'var(--bad)' : 'var(--faint)',
                   }}
                 >

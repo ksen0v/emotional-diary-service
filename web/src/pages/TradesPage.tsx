@@ -101,7 +101,15 @@ export function TradesPage() {
   const totals = feed.data?.totals
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1000 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flexGrow: 1,
+        minHeight: 0,
+      }}
+    >
       {!hasSource && (
         <div className="card" style={{ padding: '16px 18px' }}>
           <div style={{ color: 'var(--dim)' }}>Источник сделок не подключён.</div>
@@ -244,7 +252,10 @@ export function TradesPage() {
         </div>
       )}
 
-      <div className="card" style={{ padding: '4px 0' }}>
+      <div
+        className="card"
+        style={{ padding: '4px 0', flexGrow: 1, minHeight: 0, overflowY: 'auto' }}
+      >
         {feed.isLoading && <div className="hint" style={{ padding: 16 }}>загрузка…</div>}
         {!feed.isLoading && items.length === 0 && (
           <div className="hint" style={{ padding: 16 }}>
@@ -359,7 +370,6 @@ function Row({
           пыль
         </span>
       )}
-      <div style={{ flexGrow: 1 }} />
       {trade.tags.map((tag) => (
         <span
           key={tag.external_id}
@@ -375,6 +385,10 @@ function Row({
           {tag.name}
         </span>
       ))}
+      {/* Кнопки своей разметки прижимаются к правому краю, а готовый статус
+          стоит сразу за тегами: в прототипе «Разметка» — это колонка, которая
+          занимает остаток строки, а не отдельный столбец у края. */}
+      {onMark && <div style={{ flexGrow: 1 }} />}
       {onMark ? (
         <div style={{ display: 'flex', gap: 6, width: 190, justifyContent: 'flex-end' }}>
           <button
@@ -405,9 +419,7 @@ function Row({
           </button>
         </div>
       ) : (
-        <span style={{ color: mark.color, width: 110, textAlign: 'right' }}>
-          {mark.label}
-        </span>
+        <span style={{ color: mark.color, width: 110 }}>{mark.label}</span>
       )}
     </div>
   )
