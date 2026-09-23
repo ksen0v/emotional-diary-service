@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.contracts.trading_time import trading_day
-from eds.modules.daybook import presets, repo, service
+from eds.modules.daybook import presets, service
 from eds.platform import auth, db
 
 router = APIRouter(prefix="/api/v1", tags=["daybook"])
@@ -134,14 +134,6 @@ class PresetsOut(BaseModel):
     tags: list[str]
 
 
-class ReviewIn(BaseModel):
-    day: dt.date
-    plan_followed: str = Field(pattern="^(yes|partial|no)$")
-    pull_text: str | None = None
-    execution_score: int | None = Field(default=None, ge=1, le=5)
-    takeaway: str | None = None
-
-
 @router.get("/diary/presets", response_model=PresetsOut)
 async def diary_presets(
     _: auth.CurrentUser = Depends(auth.current_user),
@@ -152,45 +144,3 @@ async def diary_presets(
     пишет своими словами, если наши не подходят.
     """
     return PresetsOut(**presets.as_dict())
-
-
-@router.get("/reviews/{day}")
-async def get_review(
-    day: dt.date,
-    user: auth.CurrentUser = Depends(auth.current_user),
-    s: AsyncSession = Depends(db.session),
-) -> dict:
-    row = await repo.review_of(s, user.user_id, day)
-    day_row = await repo.day_of(s, user.user_id, day)
-    return {
-        "day": day.isoformat(),
-        "review": service.review_out(row),
-        "state": day_row.review_state if day_row else "none",
-        "session_closed_at": day_row.session_closed_at if day_row else None,
-    }
-
-
-@router.post("/reviews", status_code=201)
-async def post_review(
-    body: ReviewIn,
-    user: auth.CurrentUser = Depends(auth.current_user),
-    _: None = Depends(auth.check_csrf),
-    s: AsyncSession = Depends(db.session),
-) -> dict:
-    """Заполнить разбор. Пока он не заполнен, новый чек не выдаётся (ТЗ 5.4)."""
-    review = await service.submit_review(
-        s,
-        user.user_id,
-        body.day,
-        plan_followed=body.plan_followed,
-        pull_text=body.pull_text,
-        execution_score=body.execution_score,
-        takeaway=body.takeaway,
-    )
-    await s.commit()
-    return {
-        "review": service.review_out(review),
-        # Стрик появится на шаге 7: разбор входит в его условия, и тогда ответ
-        # будет показывать, как он изменился.
-        "streak": None,
-    }

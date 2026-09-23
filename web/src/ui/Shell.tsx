@@ -3,7 +3,7 @@ import { api } from '../lib/api'
 import { useSetMe } from '../lib/auth'
 import { useToday } from '../pages/TodayPage'
 import type { Me, Today } from '../lib/types'
-import { dateTime } from './format'
+import { dateTime, plural } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
@@ -81,12 +81,7 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           }}
         >
           <Admission today={today.data} />
-          <span
-            style={{ fontSize: 13, color: 'var(--dim)' }}
-            title="Стрик появится на шаге 7"
-          >
-            Стрик <span className="mono" style={{ color: 'var(--faint)' }}>—</span>
-          </span>
+          <Streak today={today.data} />
           <Sync today={today.data} />
           <div style={{ flexGrow: 1 }} />
           <span style={{ fontSize: 13, color: 'var(--dim)' }}>
@@ -154,6 +149,28 @@ function Admission({ today }: { today: Today | undefined }) {
         style={{ width: 8, height: 8, borderRadius: 4, background: shown.color }}
       />
       <span style={{ color: 'var(--dim)' }}>{shown.label}</span>
+    </span>
+  )
+}
+
+// Стрик в топ-баре: короткая форма, чтобы число дней было на виду в любом
+// разделе. Разбор «почему день не зачтён» живёт в дневнике, а не здесь.
+function Streak({ today }: { today: Today | undefined }) {
+  const streak = today?.streak
+  if (!streak) {
+    return (
+      <span style={{ fontSize: 13, color: 'var(--dim)' }}>
+        Стрик <span className="mono" style={{ color: 'var(--faint)' }}>—</span>
+      </span>
+    )
+  }
+  return (
+    <span
+      style={{ fontSize: 13, color: 'var(--dim)' }}
+      title={`лучший результат ${streak.best}`}
+    >
+      Стрик <span className="mono" style={{ color: 'var(--fg)' }}>{streak.current}</span>{' '}
+      {plural(streak.current, 'день', 'дня', 'дней')}
     </span>
   )
 }

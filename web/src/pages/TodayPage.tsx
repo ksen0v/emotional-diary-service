@@ -5,6 +5,7 @@ import { ApiError, api } from '../lib/api'
 import type { Curve, Feed, Today } from '../lib/types'
 import { DayCurve } from '../ui/DayCurve'
 import { EntryEditor } from '../ui/EntryEditor'
+import { FreezeDay, StreakCard } from '../ui/StreakCard'
 import { Stub } from '../ui/Stub'
 import { duration, money, pct, pnlColor, time } from '../ui/format'
 
@@ -194,6 +195,17 @@ function PreSession({ today }: { today: Today }) {
                 minute: '2-digit',
               })}
             </span>
+          </div>
+          {/* Заморозка живёт здесь, а не только в карточке «Дисциплина»:
+              замораживают день, в который не торгуют, а в такой день до
+              карточки на экране сессии трейдер не доходит. */}
+          <div style={{ marginTop: 18 }}>
+            <FreezeDay
+              streak={today.streak}
+              day={today.day}
+              violations={today.counters.violations}
+              compact
+            />
           </div>
         </div>
         <div
@@ -523,10 +535,10 @@ function DayScreen({ today }: { today: Today }) {
             minHeight: 0,
           }}
         >
-          <Stub
-            title="Дисциплина"
-            step={7}
-            what="Дни подряд без нарушений, лучший результат и заморозки."
+          <StreakCard
+            streak={today.streak}
+            today={today.day}
+            violationsToday={today.counters.violations}
           />
           <EntryEditor level="day" periodStart={today.day} entry={today.entry} grow />
         </div>

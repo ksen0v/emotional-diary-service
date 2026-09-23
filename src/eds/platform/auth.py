@@ -106,6 +106,17 @@ async def current_prefs(
     return await _prefs_resolver(s, user.user_id)
 
 
+async def prefs_of(s: AsyncSession, user_id: uuid.UUID) -> UserPrefs:
+    """Настройки пользователя вне запроса — для фоновых консьюмеров.
+
+    Тот же резолвер, что и у зависимости current_prefs: у фонового процесса
+    нет запроса, но правило «модуль не читает чужую схему» от этого не меняется.
+    """
+    if _prefs_resolver is None:  # pragma: no cover
+        raise RuntimeError("резолвер настроек не зарегистрирован")
+    return await _prefs_resolver(s, user_id)
+
+
 async def source_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
     """Возможности активного источника. Пусто — источник не подключён."""
     if _capabilities_resolver is None:  # pragma: no cover — source не подключён

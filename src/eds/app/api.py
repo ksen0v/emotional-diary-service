@@ -14,8 +14,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.app import diary, pipeline, today
+from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
+from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.streaks import repo as streaks_repo
+from eds.modules.streaks import service as streaks_service
+from eds.modules.trades import repo as trades_repo
 from eds.platform import auth, db
 
 router = APIRouter(prefix="/api/v1", tags=["sync"])
@@ -140,6 +145,13 @@ async def put_entry(
         cutoff=prefs.day_cutoff,
         today=today.today_of(prefs),
     )
+    # Запись дня — одно из условий зачёта (ТЗ 7.1), поэтому пересчитываем
+    # стрик сразу за этот день: иначе «зачтён» в дневнике появлялся бы
+    # только после следующего открытия главной.
+    if row.level == periods.DAY:
+        await app_streaks.refresh(
+            s, user.user_id, prefs, today=today.today_of(prefs), days=[row.period_start]
+        )
     await s.commit()
     return await diary.entry_with_facts(s, user.user_id, row)
 
@@ -160,3 +172,104 @@ async def comment_entry(
         "body": comment.body,
         "created_at": comment.created_at.isoformat(),
     }
+
+
+# --- пост-сессионный разбор и стрик ---
+
+
+class ReviewIn(BaseModel):
+    day: dt.date
+    plan_followed: str = Field(pattern="^(yes|partial|no)$")
+    pull_text: str | None = None
+    execution_score: int | None = Field(default=None, ge=1, le=5)
+    takeaway: str | None = None
+
+
+class FreezeIn(BaseModel):
+    day: dt.date
+
+
+@router.get("/reviews/{day}")
+async def get_review(
+    day: dt.date,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    row = await daybook_repo.review_of(s, user.user_id, day)
+    day_row = await daybook_repo.day_of(s, user.user_id, day)
+    return {
+        "day": day.isoformat(),
+        "review": daybook.review_out(row),
+        "state": day_row.review_state if day_row else "none",
+        "session_closed_at": day_row.session_closed_at if day_row else None,
+    }
+
+
+@router.post("/reviews", status_code=201)
+async def post_review(
+    body: ReviewIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Заполнить разбор. Пока он не заполнен, новый чек не выдаётся (ТЗ 5.4).
+
+    Ответ показывает, как изменился стрик: разбор входит в условия зачёта дня,
+    и увидеть последствие сразу — единственный способ связать одно с другим.
+    """
+    day = today.today_of(prefs)
+    before = (await streaks_repo.ensure_state(s, user.user_id)).current
+    review = await daybook.submit_review(
+        s,
+        user.user_id,
+        body.day,
+        plan_followed=body.plan_followed,
+        pull_text=body.pull_text,
+        execution_score=body.execution_score,
+        takeaway=body.takeaway,
+    )
+    state = await app_streaks.refresh(s, user.user_id, prefs, today=day)
+    await s.commit()
+    return {
+        "review": daybook.review_out(review),
+        "streak": {"current": state.current, "previous": before, "best": state.best},
+    }
+
+
+@router.get("/streak")
+async def streak(
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Серия дисциплины и полоска за 30 дней (Архитектура ч.2 §3.8)."""
+    day = today.today_of(prefs)
+    await app_streaks.refresh(s, user.user_id, prefs, today=day)
+    out = await streaks_service.state_out(s, user.user_id, day)
+    await s.commit()
+    return out
+
+
+@router.post("/streak/freeze")
+async def freeze_day(
+    body: FreezeIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Заморозить день: он не рвёт серию и не удлиняет её (ТЗ 7.2)."""
+    day = today.today_of(prefs)
+    summary = (
+        await trades_repo.day_summaries(s, user.user_id, body.day, body.day)
+    ).get(body.day)
+    await streaks_service.freeze(
+        s,
+        user.user_id,
+        body.day,
+        day,
+        has_violations=bool(summary and summary["violations"] > 0),
+    )
+    await s.commit()
+    return await streaks_service.state_out(s, user.user_id, day)

@@ -148,3 +148,87 @@ button.cta:disabled { background: #3a3a33; border-color: #3a3a33; color: #6a6860
   background: #33332e;
   color: var(--dim);
 }
+
+/* Конструктор правил. Поля здесь мельче общих: в строку условия помещается
+   показатель, сравнение, число и единица, и на общих размерах она переносится. */
+.rulecard {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px 14px;
+  background: var(--panel);
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--fg);
+}
+.rulecard:hover { border-color: #3c3c36; }
+.rulecard.on { border-color: var(--accent); background: #1e2228; }
+
+.sel {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+.num {
+  width: 66px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+}
+.conn {
+  width: 46px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+}
+.del {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #6e6c65;
+  font-size: 15px;
+  padding: 0;
+}
+.del:hover:not(:disabled) { border-color: #5c2a24; color: var(--bad); }
+
+/* Название правила правится на месте: в прототипе это просто заголовок,
+   но без ввода новое правило не назвать. */
+.rulename {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 24px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 2px 8px;
+  min-width: 0;
+}
+.rulename:hover:not(:disabled) { border-color: var(--line-2); }
+.rulename:focus { border-color: #4a4a42; background: var(--panel-2); }
+.rulename:disabled { color: var(--fg); }
+
+.pill {
+  font-size: 11px;
+  padding: 3px 11px;
+  border-radius: 12px;
+  font-family: inherit;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--faint);
+}
+.pill.on { border-color: #2f4a38; color: var(--ok); }

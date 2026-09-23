@@ -62,6 +62,9 @@ WIPE = (
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM rules.rules WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM streaks.day_marks WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM streaks.state WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM daybook.entry_tags WHERE entry_id IN ("
     " SELECT id FROM daybook.entries WHERE user_id IN (SELECT id FROM test_users))",
     "DELETE FROM daybook.entry_comments WHERE entry_id IN ("

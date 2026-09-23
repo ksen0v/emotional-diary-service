@@ -12,9 +12,11 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.streaks import rules as streak_rules
 from eds.modules.trades import repo as trades_repo
 from eds.modules.trades import service as trades_service
 from eds.platform import auth
@@ -78,6 +80,7 @@ async def _day_items(
     """
     summaries = await trades_repo.day_summaries(s, user_id, since, until)
     days = {row.day: row for row in await daybook_repo.days_in_range(s, user_id, since, until)}
+    marks = await app_streaks.marks_in_range(s, user_id, since, until)
 
     items: list[dict] = []
     day = since
@@ -99,7 +102,7 @@ async def _day_items(
                         entry, tags.get(entry.id, []), comments.get(entry.id, [])
                     )
                 ),
-                "facts": _day_facts(summary, row),
+                "facts": _day_facts(summary, row, marks.get(day)),
             }
         )
         day += dt.timedelta(days=1)
@@ -107,7 +110,7 @@ async def _day_items(
     return items
 
 
-def _day_facts(summary: dict | None, row) -> dict:
+def _day_facts(summary: dict | None, row, mark=None) -> dict:
     """Факты одного дня — то, что стоит рядом с записью и в клетке календаря."""
     trades = summary["trades"] if summary else 0
     unmarked = summary["unmarked"] if summary else 0
@@ -144,9 +147,14 @@ def _day_facts(summary: dict | None, row) -> dict:
         "rules_fired": 0,
         "locks": 0,
         "locks_kept": 0,
-        # Стрик появится на шаге 7; null означает «сервис этого ещё
-        # не считает», а не «день не зачтён».
-        "counted_in_streak": None,
+        # Зачёт дня и причина берутся из отметки стрика, а не пересчитываются
+        # здесь заново: две копии одного правила разойдутся, и на экране
+        # окажется одна причина, а в расчёте другая.
+        "counted_in_streak": None if mark is None else mark.counted,
+        "streak_reason": None if mark is None else mark.reason,
+        "streak_reason_text": (
+            None if mark is None else streak_rules.REASON_TEXT.get(mark.reason)
+        ),
     }
 
 

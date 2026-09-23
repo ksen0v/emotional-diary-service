@@ -107,8 +107,12 @@ export function DiaryPage() {
   const selected = sel ?? todayIso
   const month = startOfMonth(selected)
 
+  // Ключ календаря и ключ правой панели обязаны различаться даже на уровне
+  // «день», когда обе смотрят на один месяц: react-query держит один кэш на
+  // ключ, и при совпадении две разные выборки перетирают друг друга —
+  // календарь получал ответ на запрос одного дня и оставался пустым.
   const calendar = useQuery<DiaryList>({
-    queryKey: ['diary', 'day', month],
+    queryKey: ['diary', 'calendar', month],
     queryFn: () =>
       api.get<DiaryList>(
         `/entries?level=day&from=${month}&to=${endOfMonth(month)}`,
@@ -119,7 +123,7 @@ export function DiaryPage() {
   const weekStart = startOfWeek(selected)
   const periodStart = level === 'week' ? weekStart : month
   const period = useQuery<DiaryList>({
-    queryKey: ['diary', level, periodStart],
+    queryKey: ['diary', 'period', level, periodStart],
     queryFn: () =>
       api.get<DiaryList>(
         `/entries?level=${level}&from=${periodStart}&to=${periodStart}`,
@@ -536,20 +540,76 @@ function PeriodCard({
       </div>
       <div style={{ marginTop: 14 }}>
         {loading && <div className="hint">загрузка…</div>}
-        {!loading && f && level === 'day' && <DayRows facts={f} />}
+        {!loading && f && level === 'day' && (
+          <DayRows facts={f} isToday={selected === todayIso} />
+        )}
         {!loading && f && level !== 'day' && <PeriodRows facts={f} />}
       </div>
     </div>
   )
 }
 
-function DayRows({ facts }: { facts: DiaryItem['facts'] }) {
+// Зачёт дня в серии и причина незачёта. Причина приходит с сервера рассчитанной
+// вместе с отметкой (ТЗ 7, Архитектура §3.8): считать её здесь заново значило бы
+// держать две копии правила, которые однажды разойдутся.
+function StreakRow({
+  facts,
+  isToday,
+}: {
+  facts: DiaryItem['facts']
+  isToday: boolean
+}) {
+  // Сегодняшний день не размечается: он ещё не закончился, и назвать его
+  // незачтённым до конца дня — неправда.
+  if (isToday) {
+    return (
+      <Row label="Зачёт в серии" value="день идёт" opts={{ color: 'var(--dim)' }} />
+    )
+  }
+  if (facts.counted_in_streak === null) {
+    return (
+      <Row
+        label="Зачёт в серии"
+        value="не в счёте"
+        opts={{ color: 'var(--dim)', sub: 'серия сохранена' }}
+      />
+    )
+  }
+  if (facts.streak_reason === 'frozen') {
+    return (
+      <Row
+        label="Зачёт в серии"
+        value="заморожен"
+        opts={{ color: 'var(--dim)', sub: 'серия сохранена' }}
+      />
+    )
+  }
+  return (
+    <Row
+      label="Зачёт в серии"
+      value={facts.counted_in_streak ? 'зачтён' : 'не зачтён'}
+      opts={{
+        color: facts.counted_in_streak ? 'var(--ok)' : 'var(--bad)',
+        sub: facts.counted_in_streak ? '' : (facts.streak_reason_text ?? ''),
+      }}
+    />
+  )
+}
+
+function DayRows({
+  facts,
+  isToday,
+}: {
+  facts: DiaryItem['facts']
+  isToday: boolean
+}) {
   if (facts.trades === 0 && facts.admission === null) {
     return (
       <>
         <Row label="Статус" value="вне рынка" opts={{ first: true, color: 'var(--dim)' }} />
         <Row label="Сделок" value="0" />
         <Row label="Чек" value="не проходился" opts={{ color: 'var(--dim)' }} />
+        <StreakRow facts={facts} isToday={isToday} />
       </>
     )
   }
@@ -617,6 +677,7 @@ function DayRows({ facts }: { facts: DiaryItem['facts'] }) {
                 : 'var(--dim)',
         }}
       />
+      <StreakRow facts={facts} isToday={isToday} />
     </>
   )
 }

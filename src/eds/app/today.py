@@ -11,11 +11,13 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import streaks as app_streaks
 from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
 from eds.modules.source import repo as source_repo
+from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import repo as trades_repo
 from eds.modules.trades import service as trades_service
 from eds.platform import auth
@@ -46,6 +48,11 @@ async def build(
     pending_day = await daybook.pending_review(s, user_id, day)
     entry_row = await daybook_repo.entry_of(s, user_id, periods.DAY, day)
 
+    # Стрик пересчитываем на чтении главной страницы: отдельного процесса,
+    # который делал бы это ночью, пока нет, а показывать вчерашнюю серию
+    # сегодня — то же самое, что показывать неверную.
+    await app_streaks.refresh(s, user_id, prefs, today=day)
+
     state = daybook.state_of(
         day_row, has_source=connection is not None, pending_review_day=pending_day
     )
@@ -65,7 +72,7 @@ async def build(
         # нет в сервисе», и фронт по нему показывает заглушку вместо пустого
         # блока с нулями.
         "lock": None,
-        "streak": None,
+        "streak": await streaks_service.state_out(s, user_id, day),
         "entry": (
             None
             if entry_row is None

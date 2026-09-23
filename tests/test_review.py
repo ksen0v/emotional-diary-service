@@ -108,8 +108,10 @@ async def test_closing_session_puts_the_review_in_the_queue(app_client) -> None:
     body = filled.json()
     assert body["review"]["plan_followed"] == "partial"
     assert body["review"]["execution_score"] == 3
-    # Стрик появится на шаге 7: null, а не нули.
-    assert body["streak"] is None
+    # Ответ показывает стрик: разбор входит в условия зачёта дня. Сегодняшний
+    # день в серию ещё не входит — он не кончился, и нарушение может случиться
+    # через минуту, поэтому ноль здесь правильный.
+    assert body["streak"] == {"current": 0, "previous": 0, "best": 0}
 
     again = await post_review(app_client, day)
     assert again.status_code == 409

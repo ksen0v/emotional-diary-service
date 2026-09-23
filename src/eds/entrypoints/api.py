@@ -21,6 +21,7 @@ from eds.app.api import router as sync_router
 from eds.contracts import events as ev
 from eds.modules.daybook.api import router as daybook_router
 from eds.modules.identity.api import router as identity_router
+from eds.modules.rules.api import router as rules_router
 from eds.modules.source.api import router as source_router
 from eds.modules.trades.api import router as trades_router
 from eds.platform import bus, db, errors, log
@@ -72,6 +73,7 @@ app.include_router(identity_router)
 app.include_router(source_router)
 app.include_router(trades_router)
 app.include_router(daybook_router)
+app.include_router(rules_router)
 app.include_router(sync_router)
 
 

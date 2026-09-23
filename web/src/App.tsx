@@ -4,6 +4,7 @@ import { DiaryPage } from './pages/DiaryPage'
 import { Login } from './pages/Login'
 import { PremarketPage } from './pages/PremarketPage'
 import { ReviewPage } from './pages/ReviewPage'
+import { RulesPage } from './pages/RulesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TodayPage } from './pages/TodayPage'
 import { TradesPage } from './pages/TradesPage'
@@ -55,10 +56,7 @@ export function App() {
             />
           }
         />
-        <Route
-          path="/rules"
-          element={<Stub title="Правила" step={8} what="Конструктор правил и триггеры." />}
-        />
+        <Route path="/rules" element={<RulesPage />} />
         <Route path="*" element={<Navigate to="/today" replace />} />
       </Routes>
     </Shell>

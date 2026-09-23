@@ -247,6 +247,26 @@ export type TodaySource = {
   capabilities: Record<string, boolean | string>
 }
 
+// Состояние серии дисциплины (ТЗ 7). «days» — полоска за 30 дней: причина
+// незачёта приходит с сервера рассчитанной, чтобы на экране и в расчёте
+// не оказалось двух разных причин.
+export type StreakDay = {
+  day: string
+  counted: boolean
+  reason: string
+  text: string
+}
+
+export type Streak = {
+  current: number
+  best: number
+  last_day: string | null
+  freezes: { used: number; left: number; per_month: number; month: string }
+  month: { days: number; clean: number; month: string }
+  days: StreakDay[]
+  conditions: string[]
+}
+
 export type DayState =
   | 'no_source'
   | 'no_check'
@@ -264,7 +284,7 @@ export type Today = {
   admission: Admission | null
   session: { opened_at: string | null; closed_at: string | null }
   lock: null
-  streak: null
+  streak: Streak
   entry: DiaryEntry | null
   review: {
     state: string
@@ -351,6 +371,8 @@ export type DayFacts = {
   locks: number
   locks_kept: number
   counted_in_streak: boolean | null
+  streak_reason: string | null
+  streak_reason_text: string | null
 }
 
 // Факты недели и месяца — метрики из ТЗ 5.1.
@@ -408,4 +430,94 @@ export type ReviewState = {
   review: Review | null
   state: string
   session_closed_at: string | null
+}
+
+// --- правила (шаг 8) ---
+
+export type RuleMetric = {
+  key: string
+  name: string
+  unit: string
+  type: 'int' | 'decimal'
+  min: string
+  max: string
+  hint?: string
+}
+
+export type RuleMetricBlocked = {
+  key: string
+  name: string
+  unit: string
+  requires: string | null
+  reason: string
+}
+
+export type Named = { key: string; name: string }
+
+export type UnlockCondition = {
+  key: 'timer' | 'review' | 'buddy'
+  name: string
+  params: { minutes?: { min: number; max: number; default: number } }
+  requires_contact?: boolean
+}
+
+export type RulesDictionary = {
+  metrics: RuleMetric[]
+  unavailable_metrics: RuleMetricBlocked[]
+  comparators: Named[]
+  connectors: Named[]
+  significance_pct: string
+  max_conditions: number
+  unlock_conditions: UnlockCondition[]
+  buddy_available: boolean
+  buddy_note: string
+}
+
+export type RuleCondition = {
+  metric: string
+  cmp: string
+  value: number | string
+  conn?: 'and' | 'or'
+}
+
+export type RuleActions = {
+  alert: boolean
+  lock: { enabled: boolean; minutes: number | null }
+  buddy: boolean
+  remind_after_minutes?: number
+}
+
+export type RuleUnlock = { timer: boolean; review: boolean; buddy: boolean }
+
+export type Rule = {
+  id: string
+  name: string
+  kind: 'system' | 'user'
+  system_code: string | null
+  enabled: boolean
+  // У системного правила условий нет: они в коде обработчика, а не в базе.
+  conditions: { items: RuleCondition[] } | null
+  actions: RuleActions
+  unlock: RuleUnlock
+  if_text: string
+  human_text: string
+  summary: string
+  fired_last_30d: number
+  version: number
+  updated_at: string
+  editable_fields: string[] | null
+}
+
+export type RulesList = {
+  rules: Rule[]
+  unavailable_metrics: string[]
+  engine: { active: boolean; note: string }
+}
+
+export type RulePreview = {
+  if_text: string
+  human_text: string
+  summary: string
+  valid: boolean
+  problem: { code: string; message: string; details?: Record<string, unknown> } | null
 }
