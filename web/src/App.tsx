@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useMe } from './lib/auth'
 import { DiaryPage } from './pages/DiaryPage'
+import { IncidentsPage } from './pages/IncidentsPage'
 import { Login } from './pages/Login'
 import { PremarketPage } from './pages/PremarketPage'
 import { ReviewPage } from './pages/ReviewPage'
@@ -9,7 +10,6 @@ import { SettingsPage } from './pages/SettingsPage'
 import { TodayPage } from './pages/TodayPage'
 import { TradesPage } from './pages/TradesPage'
 import { Shell } from './ui/Shell'
-import { Stub } from './ui/Stub'
 
 export function App() {
   const me = useMe()
@@ -46,16 +46,7 @@ export function App() {
         />
         <Route path="/diary" element={<DiaryPage />} />
         <Route path="/review/:day" element={<ReviewPage />} />
-        <Route
-          path="/incidents"
-          element={
-            <Stub
-              title="Инциденты"
-              step={10}
-              what="История срабатываний: соблюдено или нарушено."
-            />
-          }
-        />
+        <Route path="/incidents" element={<IncidentsPage />} />
         <Route path="/rules" element={<RulesPage />} />
         <Route path="*" element={<Navigate to="/today" replace />} />
       </Routes>

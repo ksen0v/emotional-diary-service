@@ -100,6 +100,9 @@ class RuleOut(BaseModel):
     version: int
     updated_at: dt.datetime
     editable_fields: list[str] | None = None
+    # Что у системного триггера ещё не работает: `short` на карточку рядом
+    # со счётчиком, `text` — в конструктор. null — работает целиком.
+    pending: dict[str, str] | None = None
 
 
 class RulesOut(BaseModel):

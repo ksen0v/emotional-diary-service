@@ -288,6 +288,15 @@ export type LockSatisfied = {
 
 export type BreachTrade = { trade_id: string; symbol: string; open_time: string }
 
+// Что показывает красная полоса нарушения. `streak_text` собирает сервер:
+// фраза зависит от того, как считается стрик, и собранная на фронте она
+// разошлась бы с расчётом.
+export type Breach = {
+  trades: BreachTrade[]
+  first: BreachTrade
+  streak_text: string | null
+}
+
 export type Lock = {
   id: string
   incident_id: string
@@ -307,7 +316,7 @@ export type Lock = {
   unlock_text: string
   // Доверенное лицо появится на шаге 13.
   buddy: null
-  breach: { trades: BreachTrade[]; first: BreachTrade } | null
+  breach: Breach | null
 }
 
 export type LockReviewResult = {
@@ -331,6 +340,55 @@ export type NearRule = {
   hot: boolean
 }
 
+// --- инциденты (шаг 10) ---
+
+// Строка ленты. Заголовок, подпись и обе даты приходят собранными: та же
+// строка стоит в блоке «Инциденты сегодня» и уйдёт в уведомление, а три
+// сборщика опишут одно событие тремя способами.
+export type Incident = {
+  id: string
+  day: string
+  date_text: string
+  time_text: string
+  code: 'rule_fired' | 'violation' | 'lock_breached' | 'no_admission'
+  title: string
+  detail: string
+  // Короткая форма той же строки — для блока «Инциденты сегодня».
+  summary: string
+  // Исходов у инцидента два — соблюдено и нарушено (ТЗ 9.2). Третье значение
+  // не исход, а то, что он ещё идёт.
+  outcome: 'open' | 'kept' | 'breached'
+  outcome_text: string
+  shadow: boolean
+  opened_at: string
+  closed_at: string | null
+  rule: { id: string | null; name: string | null; text_at_firing: string | null }
+  lock: {
+    id: string
+    started_at: string
+    timer_until: string | null
+    window_until: string
+    state: string
+    lifted_at: string | null
+    lift_reason: string | null
+  } | null
+}
+
+export type IncidentsList = {
+  items: Incident[]
+  next_cursor: string | null
+  has_more: boolean
+  totals: {
+    count: number
+    kept: number
+    breached: number
+    open: number
+    // Доля соблюдённых среди закончившихся. null — закончившихся ещё нет.
+    discipline_pct: number | null
+  }
+  period: { label: string; from: string; to: string }
+}
+
 export type Today = {
   day: string
   server_time: string
@@ -341,6 +399,8 @@ export type Today = {
   session: { opened_at: string | null; closed_at: string | null }
   lock: Lock | null
   near_rules: NearRule[]
+  // Блок «Инциденты сегодня» из прототипа Main.dc.html.
+  incidents: Incident[]
   streak: Streak
   entry: DiaryEntry | null
   review: {
@@ -563,12 +623,27 @@ export type Rule = {
   version: number
   updated_at: string
   editable_fields: string[] | null
+  // Что у системного триггера ещё не работает. null — работает целиком.
+  pending: { short: string; text: string } | null
+}
+
+// У каждого «ещё не готово» свой флаг и свой текст. Общего «движок готов»
+// здесь нет: на шаге 9 именно он унёс с экрана предупреждение о системных
+// триггерах, когда движок включился, а триггеры — нет.
+export type RulesEngine = {
+  active: boolean
+  system_active: boolean
+  retro_active: boolean
+  shadow_mode: boolean
+  note: string
+  system_note: string
+  shadow_note: string
 }
 
 export type RulesList = {
   rules: Rule[]
   unavailable_metrics: string[]
-  engine: { active: boolean; note: string }
+  engine: RulesEngine
 }
 
 export type RulePreview = {

@@ -19,6 +19,7 @@ import datetime as dt
 import logging
 import uuid
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +29,15 @@ from eds.modules.incidents import repo
 from eds.modules.incidents.models import (
     ACTIVE,
     BREACHED,
+    CODE_LOCK_BREACHED,
+    CODE_NO_ADMISSION,
     CODE_RULE_FIRED,
+    CODE_TITLE,
+    CODE_VIOLATION,
     EXPIRED,
     KEPT,
     LIFTED,
+    OPEN,
     IncidentRow,
     LockRow,
 )
@@ -65,8 +71,15 @@ async def open_from_firing(
     window_until: dt.datetime,
     shadow: bool,
     now: dt.datetime,
+    code: str = CODE_RULE_FIRED,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[IncidentRow | None, LockRow | None]:
     """Записать инцидент и, если правило того требует, включить блокировку.
+
+    `code` отличает срабатывание правила трейдера от системного триггера:
+    у SR-1 это `violation`. Механика при этом одна и та же — у системного
+    триггера другое условие, а не другой жизненный цикл, и дублировать ради
+    этого весь путь значило бы завести второе место, где чинить блокировки.
 
     Блокировка не включается в трёх случаях, и каждый из них записан
     в инциденте, а не подразумевается:
@@ -90,6 +103,7 @@ async def open_from_firing(
         "snapshot": firing.snapshot,
         "had_lock": False,
         "alert": bool(firing.actions.get("alert")),
+        **(extra or {}),
     }
     if lock_wanted and shadow:
         details["not_locked"] = "shadow_mode"
@@ -103,7 +117,7 @@ async def open_from_firing(
         s,
         user_id,
         day=firing.day,
-        code=CODE_RULE_FIRED,
+        code=code,
         rule_id=firing.rule_id,
         details=details,
         shadow=shadow,
@@ -207,6 +221,73 @@ async def _start_lock(
         dedup_key=f"lock-started:{lock.id}",
     )
     return lock
+
+
+async def open_fact(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    code: str,
+    day: dt.date,
+    rule_id: uuid.UUID | None,
+    rule_name: str,
+    rule_text: str,
+    details: dict[str, Any],
+    shadow: bool,
+    now: dt.datetime,
+    alert: bool = True,
+) -> IncidentRow | None:
+    """Инцидент-факт: событие уже случилось, соблюдать нечего.
+
+    Так записываются SR-2 и SR-3. Сделка во время блокировки и торговля без
+    допуска — это не окно, которое можно выдержать, а уже состоявшееся
+    нарушение, поэтому исход известен в момент записи и инцидент закрывается
+    сразу. Держать его открытым значило бы обещать, что он ещё может
+    кончиться иначе.
+
+    Режим наблюдения на запись не влияет: он выключает применение блокировок
+    и отправку уведомлений, а не фиксацию факта (Архитектура ч.2 §5.10).
+    Стрик в режиме наблюдения тоже считается по-настоящему.
+
+    None — такой инцидент уже записан. Ключ повтора стоит в базе, поэтому
+    повторный проход сверки ничего не задвоит.
+    """
+    incident = await repo.insert_incident(
+        s,
+        user_id,
+        day=day,
+        code=code,
+        rule_id=rule_id,
+        details={**details, "rule_name": rule_name, "rule_text": rule_text},
+        shadow=shadow,
+    )
+    if incident is None:
+        return None
+
+    await _close_incident(s, incident, BREACHED, now)
+    await bus.publish(
+        s,
+        ev.INCIDENTS_OPENED,
+        {
+            "user_id": str(user_id),
+            "incident_id": str(incident.id),
+            "day": day.isoformat(),
+            "code": code,
+            "rule_id": str(rule_id) if rule_id else None,
+            "rule_name": rule_name,
+            "shadow": shadow,
+        },
+        dedup_key=f"incident:{incident.id}",
+    )
+    if alert:
+        # Telegram и сигнал доверенному лицу — шаг 13. До него алерт идёт
+        # в лог: это честнее, чем очередь, из которой никто не читает.
+        log.info(
+            "алерт (шаг 13 отправит в Telegram): %s — %s",
+            CODE_TITLE.get(code, code),
+            rule_text,
+        )
+    return incident
 
 
 # --- compliance и снятие ---
@@ -489,16 +570,222 @@ def breach_of(incident: IncidentRow | None) -> dict[str, Any] | None:
     trades = (incident.details or {}).get("breach_trades") or []
     if not trades:
         return None
-    return {"trades": trades, "first": trades[0]}
+    return {"trades": trades, "first": trades[0], "streak_text": None}
 
 
-def incident_out(row: IncidentRow, lock: LockRow | None) -> dict[str, Any]:
+def streak_burned_text(current: int) -> str:
+    """Вторая фраза красной полосы: что стало со стриком (SR-2, ТЗ 6.5).
+
+    В прототипе она звучит как «Стрик 14 дней сгорел», и это почти правда —
+    но не вся: отметка дню ставится, когда день закончится, поэтому число
+    в шапке до границы дня не изменится. Умолчать об этом нельзя: трейдер
+    увидит прежние 14 и решит, что обошлось, а на следующий день получит
+    единицу без объяснения. Поэтому фраза говорит и про сгоревший стрик,
+    и про то, когда это станет видно.
+
+    Третьей фразы прототипа — «Максиму отправлен сигнал» — здесь нет:
+    доверенное лицо появится на шаге 13, и до тех пор про отправленный
+    сигнал сервис врать не может.
+    """
+    if current <= 0:
+        return "Этот день в стрик не зачтётся."
+    days = _plural(current, "день", "дня", "дней")
+    return (
+        f"Стрик {current} {days} сгорел: этот день не зачтётся. "
+        "Счётчик в шапке обновится на границе дня."
+    )
+
+
+# Заголовок и подпись строки в ленте инцидентов собирает сервер. Причина та
+# же, по которой сервер собирает `human_text` правила (ч.2 §1.3 и §3.6): эта
+# же строка уйдёт в уведомление и в блок «Инциденты сегодня», и собранная
+# в трёх местах она опишет одно событие тремя способами.
+
+# Два падежа, потому что оба нужны: «18 сентября» в строке ленты и
+# «За сентябрь» в сводке над ней. Выводить один из другого дешевле не выходит.
+MONTHS_NOM = (
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
+)
+
+MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+OUTCOME_TEXT = {OPEN: "идёт", KEPT: "соблюдено", BREACHED: "нарушено"}
+
+
+def _local(moment: dt.datetime | None, tz: str) -> dt.datetime | None:
+    if moment is None:
+        return None
+    return moment.astimezone(ZoneInfo(tz))
+
+
+def _hhmm(moment: dt.datetime | None, tz: str) -> str:
+    local = _local(moment, tz)
+    return "" if local is None else f"{local:%H:%M}"
+
+
+def date_text(day: dt.date) -> str:
+    """«18 сентября» — как в прототипе. Год не показываем: лента идёт за месяц."""
+    return f"{day.day} {MONTHS[day.month - 1]}"
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    rest = abs(n) % 100
+    if 10 < rest < 20:
+        return many
+    last = rest % 10
+    if last == 1:
+        return one
+    if 1 < last < 5:
+        return few
+    return many
+
+
+def _lock_span(lock: LockRow | None) -> str:
+    """Была ли блокировка и насколько."""
+    if lock is None:
+        return ""
+    if lock.timer_until is None:
+        return "блокировка до конца торгового дня"
+    minutes = max(1, round((lock.timer_until - lock.started_at).total_seconds() / 60))
+    return f"блокировка {minutes} мин"
+
+
+def _lock_words(lock: LockRow | None) -> list[str]:
+    """Чем обернулось срабатывание: блокировка и её условия снятия."""
+    span = _lock_span(lock)
+    if not span or lock is None:
+        return []
+    words = unlock_words(lock.requires)
+    return [span] + ([f"снятие: {words}"] if words else ["снимется на границе дня"])
+
+
+def _outcome_words(row: IncidentRow, lock: LockRow | None, tz: str) -> list[str]:
+    """Чем всё кончилось. Пустая строка лучше выдуманной: инцидент, который
+    ещё идёт, так и написан — «идёт», а не «соблюдено заранее»."""
     details = row.details or {}
+    breach = (details.get("breach_trades") or [None])[0]
+    if row.outcome == BREACHED and breach:
+        at = dt.datetime.fromisoformat(breach["open_time"])
+        return [f"нарушена сделкой {_hhmm(at, tz)}"]
+    if row.outcome == KEPT and lock is not None and lock.lifted_at is not None:
+        when = _hhmm(lock.lifted_at, tz)
+        if lock.lift_reason == "day_boundary":
+            return ["кончилась на границе дня, новых сделок в окне не было"]
+        return [f"снята в {when}, новых сделок в окне не было"]
+    if row.outcome == KEPT and lock is None:
+        reason = details.get("not_locked")
+        if reason == "shadow_mode":
+            return ["режим наблюдения: блокировка не применялась"]
+        if reason == "no_lock_action":
+            return ["без блокировки: у правила только алерт"]
+    if details.get("covered_by_lock"):
+        return ["во время этого срабатывания уже шла другая блокировка"]
+    return []
+
+
+def _at(details: dict[str, Any], tz: str) -> str:
+    """«в 14:31» — время сделки в таймзоне трейдера.
+
+    Именно через таймзону, а не срезом ISO-строки: в базе время в UTC, и срез
+    дал бы в одной строке московское время рядом с лондонским.
+    """
+    raw = details.get("trade_open_time")
+    if not isinstance(raw, str):
+        return ""
+    return f" в {_hhmm(dt.datetime.fromisoformat(raw), tz)}"
+
+
+def _what_happened(row: IncidentRow, tz: str) -> list[str]:
+    """Что именно случилось — своё для каждого кода (ТЗ 6.5)."""
+    details = row.details or {}
+    snapshot = details.get("snapshot") or {}
+
+    if row.code == CODE_VIOLATION:
+        symbol = details.get("symbol") or "сделка"
+        return [f"{symbol} отмечена как нарушение{_at(details, tz)}"]
+
+    if row.code == CODE_LOCK_BREACHED:
+        symbol = details.get("symbol") or "сделка"
+        rule = details.get("breached_rule_name")
+        during = f", пока действовала блокировка «{rule}»" if rule else ""
+        return [f"{symbol} открыта{_at(details, tz)}{during}", "стрик сброшен"]
+
+    if row.code == CODE_NO_ADMISSION:
+        count = int(snapshot.get("trades") or 0)
+        score = snapshot.get("score")
+        if score is None:
+            how = "чек не пройден"
+        else:
+            how = f"балл допуска {score} из {snapshot.get('max_score', 25)}"
+        return [
+            f"{count} {_plural(count, 'сделка', 'сделки', 'сделок')} при том, что {how}",
+            "стрик сброшен",
+        ]
+
+    return []
+
+
+def _source_word(row: IncidentRow) -> str:
+    code = (row.details or {}).get("system_code")
+    if code:
+        return code
+    return "Пользовательское правило"
+
+
+def incident_out(
+    row: IncidentRow, lock: LockRow | None, tz: str = "UTC"
+) -> dict[str, Any]:
+    """Строка ленты инцидентов (Архитектура ч.2 §3.7 + прототип Incidents)."""
+    details = row.details or {}
+    title = CODE_TITLE.get(row.code) or details.get("rule_name") or "Срабатывание"
+
+    happened = _what_happened(row, tz)
+    outcome = _outcome_words(row, lock, tz)
+
+    parts = [_source_word(row)] + happened + _lock_words(lock) + outcome
+    if row.shadow:
+        parts.append("режим наблюдения")
+
+    # Короткая форма для блока «Инциденты сегодня»: в прототипе Main.dc.html
+    # строка занимает одну строку рядом с заголовком, и условия снятия там
+    # не помещаются — а главное, там на них не смотрят.
+    short = [p for p in ([_lock_span(lock)] + outcome) if p] or happened
+
     return {
+        "summary": ", ".join(short),
         "id": str(row.id),
         "day": row.day.isoformat(),
+        "date_text": date_text(row.day),
+        "time_text": _hhmm(row.opened_at, tz),
         "code": row.code,
+        "title": title,
+        "detail": " · ".join(p for p in parts if p),
         "outcome": row.outcome,
+        "outcome_text": OUTCOME_TEXT.get(row.outcome, row.outcome),
         "shadow": row.shadow,
         "opened_at": row.opened_at,
         "closed_at": row.closed_at,
@@ -522,3 +809,19 @@ def incident_out(row: IncidentRow, lock: LockRow | None) -> dict[str, Any]:
         ),
         "details": details,
     }
+
+
+async def day_feed(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date, tz: str = "UTC"
+) -> list[dict[str, Any]]:
+    """Инциденты одного дня — блок «Инциденты сегодня» на «Сегодня».
+
+    Тот же сборщик строки, что и у ленты: блок на главном экране и раздел
+    «Инциденты» обязаны описывать одно событие одинаково, иначе трейдер
+    решит, что это два разных.
+    """
+    rows = await repo.incidents_of_day(s, user_id, day)
+    if not rows:
+        return []
+    locks = await repo.locks_of(s, user_id, [row.id for row in rows])
+    return [incident_out(row, locks.get(row.id), tz) for row in rows]

@@ -8,11 +8,11 @@ import { ago, dateTime, plural } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
-const SECTIONS: { to: string; label: string; badge?: 'unmarked' }[] = [
+const SECTIONS: { to: string; label: string; badge?: 'unmarked' | 'incidents' }[] = [
   { to: '/today', label: 'Сегодня' },
   { to: '/diary', label: 'Дневник' },
   { to: '/trades', label: 'Сделки', badge: 'unmarked' },
-  { to: '/incidents', label: 'Инциденты' },
+  { to: '/incidents', label: 'Инциденты', badge: 'incidents' },
   { to: '/rules', label: 'Правила' },
 ]
 
@@ -22,6 +22,9 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   const today = useToday()
   const unmarked =
     today.data?.attention.find((item) => item.code === 'unmarked_trades')?.count ?? 0
+  // Бейдж на «Инцидентах» — сегодняшние, как в прототипе. Не «все за месяц»:
+  // бейдж отвечает на вопрос «случилось ли что-то прямо сейчас».
+  const incidentsToday = today.data?.incidents.length ?? 0
 
   async function logout() {
     await api.post('/auth/logout')
@@ -53,10 +56,14 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
             className={({ isActive }) => (isActive ? 'nav on' : 'nav')}
           >
             {s.label}
-            {/* Бейдж на «Сделках» — количество неразмеченных. Больше бейджей
-                не нужно: их станет много, и они перестанут работать. */}
+            {/* Два бейджа, как в прототипе: неразмеченные сделки и инциденты
+                за сегодня. Больше не нужно — их станет много, и они
+                перестанут работать. */}
             {s.badge === 'unmarked' && unmarked > 0 && (
               <span className="badge">{unmarked}</span>
+            )}
+            {s.badge === 'incidents' && incidentsToday > 0 && (
+              <span className="badge">{incidentsToday}</span>
             )}
           </NavLink>
         ))}

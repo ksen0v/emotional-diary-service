@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eds.contracts.streaks import DayFacts
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
+from eds.modules.incidents import repo as incidents_repo
 from eds.modules.streaks import repo as streaks_repo
 from eds.modules.streaks import service as streaks
 from eds.modules.streaks.models import StateRow
@@ -55,6 +56,10 @@ async def facts_for(
 ) -> list[DayFacts]:
     since, until = days[0], days[-1]
     summaries = await trades_repo.day_summaries(s, user_id, since, until)
+    # Нарушенные блокировки: инциденты SR-2 за день. Оркестрация спрашивает
+    # их у модуля incidents и кладёт числом в факты — модуль streaks
+    # по-прежнему не знает, что блокировки вообще где-то хранятся.
+    breaches = await incidents_repo.breach_counts(s, user_id, since, until)
     day_rows = {
         row.day: row for row in await daybook_repo.days_in_range(s, user_id, since, until)
     }
@@ -76,9 +81,10 @@ async def facts_for(
                 day=day,
                 trades=summary["trades"] if summary else 0,
                 violations=summary["violations"] if summary else 0,
-                # Нарушенные блокировки появятся на шаге 10. Ноль здесь честный:
-                # блокировок нет, значит и нарушить их нельзя.
-                lock_breaches=0,
+                # Сделка, открытая во время блокировки (SR-2). День с таким
+                # инцидентом не зачитывается по ТЗ 7.1, и это единственное,
+                # что модулю streaks нужно об этом знать.
+                lock_breaches=breaches.get(day, 0),
                 admission=row.admission if row else None,
                 session_opened=bool(row and row.session_opened_at),
                 review_done=bool(row and row.review_state == "done"),

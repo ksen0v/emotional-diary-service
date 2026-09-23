@@ -17,6 +17,7 @@ from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.incidents import service as incidents
 from eds.modules.source import repo as source_repo
 from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import repo as trades_repo
@@ -61,6 +62,17 @@ async def build(
     # сегодня — то же самое, что показывать неверную.
     await app_streaks.refresh(s, user_id, prefs, today=day)
 
+    streak = await streaks_service.state_out(s, user_id, day)
+
+    # Вторая фраза красной полосы на экране блокировки: что стало со стриком.
+    # Собирается здесь, а не в модуле incidents: про стрик знает другой модуль,
+    # и склеить два факта в одну фразу может только оркестрация.
+    lock_block = live["lock"]
+    if lock_block is not None and lock_block.get("breach"):
+        lock_block["breach"]["streak_text"] = incidents.streak_burned_text(
+            streak["current"]
+        )
+
     state = daybook.state_of(
         day_row,
         has_source=connection is not None,
@@ -84,7 +96,11 @@ async def build(
         # ч.2 §3.5 его нет — блок появился в прототипе, — но собирается он там же,
         # где весь экран: одним запросом, и считается целиком на сервере.
         "near_rules": live["near_rules"],
-        "streak": await streaks_service.state_out(s, user_id, day),
+        # Блок «Инциденты сегодня» из прототипа Main.dc.html. Строку собирает
+        # тот же сборщик, что и ленту раздела «Инциденты»: одно событие
+        # должно быть описано одинаково в обоих местах.
+        "incidents": live["incidents"],
+        "streak": streak,
         "entry": (
             None
             if entry_row is None
@@ -108,7 +124,9 @@ async def build(
         # заполнен ли разбор.
         "yesterday": await _yesterday(s, user_id, day),
         "source": await _source_block(s, connection),
-        "attention": await _attention(counters, connection),
+        "attention": await _attention(
+            counters, connection, live["unmarked_overdue"]
+        ),
         "thresholds": {
             "pass_score": prefs.pass_score,
             "min_score": prefs.min_score,
@@ -191,10 +209,13 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
-async def _attention(counters: dict, connection) -> list[dict]:
+async def _attention(
+    counters: dict, connection, unmarked_overdue: list[dict] | None = None
+) -> list[dict]:
     """Что требует действия. Один список вместо набора булевых полей."""
     out: list[dict] = []
     unmarked = counters.get("unmarked", 0)
+    overdue = len(unmarked_overdue or [])
     if unmarked:
         out.append(
             {
@@ -202,6 +223,18 @@ async def _attention(counters: dict, connection) -> list[dict]:
                 "count": unmarked,
                 "message": f"{unmarked} {_plural(unmarked, 'сделка', 'сделки', 'сделок')}"
                 " без разметки за сегодня.",
+            }
+        )
+    if overdue:
+        # SR-4. Отдельной строкой, а не приписью к предыдущей: «есть
+        # неразмеченные» и «висят дольше положенного» — разные новости, и
+        # вторая требует действия прямо сейчас (ТЗ 6.5).
+        waits = _plural(overdue, "сделка ждёт", "сделки ждут", "сделок ждут")
+        out.append(
+            {
+                "code": "unmarked_overdue",
+                "count": overdue,
+                "message": f"{overdue} {waits} разметки дольше положенного.",
             }
         )
     if connection is not None and connection.state == "error":

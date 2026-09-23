@@ -7,7 +7,7 @@ import { DayCurve } from '../ui/DayCurve'
 import { EntryEditor } from '../ui/EntryEditor'
 import { NearRules } from '../ui/NearRules'
 import { FreezeDay, StreakCard } from '../ui/StreakCard'
-import { Stub } from '../ui/Stub'
+import { TodayIncidents } from '../ui/TodayIncidents'
 import { duration, money, pct, pctPlain, pnlColor, time } from '../ui/format'
 
 export function useToday() {
@@ -430,11 +430,7 @@ function DayScreen({ today }: { today: Today }) {
             rules={today.near_rules}
             note="Собери правило из показателей дня — здесь будет видно, насколько ты близко к его границе."
           />
-          <Stub
-            title="Инциденты сегодня"
-            step={10}
-            what="Срабатывания правил с отметкой «соблюдено» или «нарушено»."
-          />
+          <TodayIncidents items={today.incidents} />
           <div
             className="card"
             style={{

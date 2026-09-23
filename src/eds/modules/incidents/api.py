@@ -1,21 +1,35 @@
-"""HTTP модуля incidents: активная блокировка и её разбор (Архитектура ч.2 §3.7)."""
+"""HTTP модуля incidents: лента, активная блокировка и её разбор (ч.2 §3.7)."""
 
+import base64
 import datetime as dt
+import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.contracts.trading_time import trading_day
 from eds.modules.incidents import repo, service
 from eds.platform import auth, db
+from eds.platform.errors import AppError
 
 router = APIRouter(prefix="/api/v1", tags=["incidents"])
+
+LIMIT_MAX = 200
 
 
 class ActiveLockOut(BaseModel):
     lock: dict[str, Any] | None
+
+
+class IncidentsOut(BaseModel):
+    items: list[dict[str, Any]]
+    next_cursor: str | None
+    has_more: bool
+    totals: dict[str, Any]
+    period: dict[str, Any]
 
 
 class ReviewIn(BaseModel):
@@ -29,6 +43,91 @@ class ReviewOut(BaseModel):
     lock_state: str
     lifted: bool
     message: str
+
+
+def _encode(row) -> str:
+    """Курсор непрозрачный: его формат — дело сервера (ч.2 §1.5)."""
+    raw = json.dumps({"at": row.opened_at.isoformat(), "id": str(row.id)})
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode(cursor: str) -> tuple[dt.datetime, uuid.UUID]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+        return dt.datetime.fromisoformat(data["at"]), uuid.UUID(data["id"])
+    except Exception as exc:
+        raise AppError("validation_failed", "Курсор не разобран.", 400) from exc
+
+
+def _window(period: str, today: dt.date) -> tuple[dt.date, dt.date, str]:
+    """Окно ленты и подпись к сводке.
+
+    По умолчанию месяц: в прототипе над лентой стоит «За сентябрь», то есть
+    сводка считается за календарный месяц, а не за скользящие 30 дней.
+    """
+    if period == "week":
+        since = today - dt.timedelta(days=today.weekday())
+        return since, today, "За неделю"
+    if period == "all":
+        return dt.date(2000, 1, 1), today, "За всё время"
+    since = today.replace(day=1)
+    return since, today, f"За {service.MONTHS_NOM[today.month - 1]}"
+
+
+@router.get("/incidents", response_model=IncidentsOut)
+async def incidents(
+    period: str = Query("month", pattern="^(week|month|all)$"),
+    outcome: str = Query("all", pattern="^(all|kept|breached)$"),
+    limit: int = Query(50, ge=1, le=LIMIT_MAX),
+    cursor: str | None = None,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    s: AsyncSession = Depends(db.session),
+) -> IncidentsOut:
+    """Лента инцидентов (Архитектура ч.2 §3.7 + прототип `Incidents.dc.html`).
+
+    Сводка считается по всей выборке фильтра, а не по странице: иначе полоса
+    над лентой менялась бы при прокрутке.
+    """
+    today = trading_day(dt.datetime.now(dt.UTC), prefs.timezone, prefs.day_cutoff)
+    since, until, label = _window(period, today)
+
+    rows = await repo.page(
+        s,
+        user.user_id,
+        since=since,
+        until=until,
+        outcome=outcome,
+        limit=limit,
+        cursor=_decode(cursor) if cursor else None,
+    )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    locks = await repo.locks_of(s, user.user_id, [row.id for row in rows])
+    totals = await repo.totals(
+        s, user.user_id, since=since, until=until, outcome=outcome
+    )
+
+    # Коэффициент дисциплины по инцидентам: доля соблюдённых среди
+    # закончившихся (ТЗ 5.1, «Compliance блокировок»). Идущие инциденты в него
+    # не входят — исход у них ещё не известен, и считать их соблюдёнными
+    # заранее значило бы завышать показатель.
+    closed = totals["kept"] + totals["breached"]
+    totals["discipline_pct"] = (
+        None if closed == 0 else round(totals["kept"] * 100 / closed, 1)
+    )
+
+    return IncidentsOut(
+        items=[
+            service.incident_out(row, locks.get(row.id), prefs.timezone)
+            for row in rows
+        ],
+        next_cursor=_encode(rows[-1]) if has_more and rows else None,
+        has_more=has_more,
+        totals=totals,
+        period={"label": label, "from": since.isoformat(), "to": until.isoformat()},
+    )
 
 
 @router.get("/locks/active", response_model=ActiveLockOut)

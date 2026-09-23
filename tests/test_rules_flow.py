@@ -102,10 +102,70 @@ async def test_system_rules_appear_by_themselves(app_client: httpx.AsyncClient) 
         assert rule["fired_last_30d"] == 0
         assert rule["human_text"].startswith("Если ")
 
-    # Экран обязан сказать, что именно уже работает: движок считает
-    # пользовательские правила, а системные триггеры — ещё нет (шаг 10).
+    # Экран обязан сказать, что именно уже работает. С шага 10 системные
+    # триггеры срабатывают, и флаг поднят — но у SR-1 остаётся своё «ещё не
+    # готово», и оно живёт на своём флаге (см. следующие два теста).
     assert out["engine"]["active"] is True
-    assert out["engine"]["system_active"] is False
+    assert out["engine"]["system_active"] is True
+
+
+async def test_system_rule_says_what_of_it_does_not_work_yet(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Долг шага 9: предупреждение живёт на своём флаге, а не на общем.
+
+    На шаге 9 строка «системные триггеры не срабатывают» висела на
+    `engine.active`. Движок включился, флаг стал `true` — и строка ушла вместе
+    с ним, хотя SR-1…SR-4 так и не срабатывали. Экран замолчал ровно там, где
+    должен был говорить, и проверять это пришлось руками.
+
+    Поэтому проверяется не наличие текста, а связь: пока свой флаг не поднят,
+    у каждого системного правила есть своё `pending`, и живёт оно на карточке
+    рядом со счётчиком — там, где ноль без пояснения читается как «не было».
+    """
+    from eds.modules.rules import system as sysrules
+
+    await register(app_client)
+    out = await rules(app_client)
+    engine = out["engine"]
+
+    # Флаги независимы: у каждого «ещё не готово» свой, и поднятие одного
+    # не гасит предупреждение другого.
+    assert engine["active"] is True
+    assert engine["system_active"] is sysrules.SYSTEM_ACTIVE
+    assert engine["system_note"]
+
+    system = {r["system_code"]: r for r in out["rules"] if r["kind"] == "system"}
+    for code, rule in system.items():
+        assert rule["pending"] == sysrules.pending_of(code), code
+
+    # У своих правил такого поля нет: они срабатывают целиком.
+    await connect_fake(app_client)
+    res = await create(app_client, TWO_STOPS)
+    assert res.status_code == 201, res.text
+    mine = [r for r in (await rules(app_client))["rules"] if r["kind"] == "user"]
+    assert mine and all(r["pending"] is None for r in mine)
+
+
+async def test_late_tag_has_its_own_flag_on_sr1(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Когда SR-1 заработает, останется то, что не работает внутри него.
+
+    Ретропроверка позднего тега — шаг 11. Её предупреждение висит на
+    `RETRO_ACTIVE`, а не на `SYSTEM_ACTIVE`, иначе включение системных
+    триггеров унесёт с экрана и его — ровно та же ошибка, что на шаге 9.
+    """
+    from eds.modules.rules import system as sysrules
+
+    assert sysrules.SYSTEM_ACTIVE is True
+    assert sysrules.RETRO_ACTIVE is False
+    # SR-1 продолжает говорить про поздний тег…
+    assert sysrules.pending_of(sysrules.SR1) is not None
+    # …а остальные три замолчали, потому что у них всё работает.
+    assert sysrules.pending_of(sysrules.SR2) is None
+    assert sysrules.pending_of(sysrules.SR3) is None
+    assert sysrules.pending_of(sysrules.SR4) is None
 
 
 async def test_system_rules_are_not_duplicated(app_client: httpx.AsyncClient) -> None:

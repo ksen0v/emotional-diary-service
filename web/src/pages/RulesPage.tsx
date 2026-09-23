@@ -9,6 +9,7 @@ import type {
   RulePreview,
   RuleUnlock,
   RulesDictionary,
+  RulesEngine,
   RulesList,
 } from '../lib/types'
 import { plural } from '../ui/format'
@@ -47,6 +48,9 @@ type Draft = {
   editable: string[] | null
   fired: number
   ifText: string
+  // Что у этого триггера ещё не работает. Текст приходит с сервера целиком:
+  // та же фраза стоит в отчёте о шаге, и собранная в двух местах разойдётся.
+  pending: { short: string; text: string } | null
 }
 
 const UNLOCK_NOTE: Record<string, string> = {
@@ -73,6 +77,7 @@ function draftOf(rule: Rule): Draft {
     editable: rule.editable_fields,
     fired: rule.fired_last_30d,
     ifText: rule.if_text,
+    pending: rule.pending,
   }
 }
 
@@ -110,6 +115,7 @@ function blankDraft(metrics: RuleMetric[]): Draft {
     editable: null,
     fired: 0,
     ifText: '',
+    pending: null,
   }
 }
 
@@ -224,6 +230,14 @@ export function RulesPage() {
         }}
       >
         <div className="klabel">Системные · отключить нельзя</div>
+        {/* Подпись к заголовку, а не вместо неё: «отключить нельзя» и «пока
+            не срабатывают» — разные утверждения, и второе исчезнет само,
+            когда флаг system_active станет true. */}
+        {!list.data.engine.system_active && (
+          <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: -6 }}>
+            {list.data.engine.system_note}
+          </div>
+        )}
         {system.map((rule) => (
           <RuleCard
             key={rule.id}
@@ -304,6 +318,11 @@ function RuleCard({
         {rule.summary} · {rule.fired_last_30d}{' '}
         {plural(rule.fired_last_30d, 'срабатывание', 'срабатывания', 'срабатываний')}
         {!rule.enabled && ' · выключено'}
+        {/* Метка стоит вплотную к счётчику: ноль рядом со словом «не
+            срабатывает» читается однозначно, а сам по себе — нет. */}
+        {rule.pending && (
+          <span style={{ color: 'var(--warn)' }}> · {rule.pending.short}</span>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 5, marginTop: 7, flexWrap: 'wrap' }}>
         {rule.actions.lock.enabled ? (
@@ -344,7 +363,7 @@ function Builder({
 }: {
   draft: Draft
   dict: RulesDictionary
-  engine: { active: boolean; note: string }
+  engine: RulesEngine
   preview: RulePreview | undefined
   patch: (next: Partial<Draft>) => void
   onSave: () => void
@@ -409,7 +428,14 @@ function Builder({
         и в момент, когда в дневнике появляется тег. Настраивать момент проверки не нужно.
       </Note>
 
+      {/* Каждое предупреждение висит на своём флаге. Общего «движок готов»
+          здесь больше нет: на шаге 9 он унёс с собой строку про системные
+          триггеры, и экран замолчал ровно там, где должен был говорить. */}
       {!engine.active && <Note tone="warn">{engine.note}</Note>}
+      {draft.pending && <Note tone="warn">{draft.pending.text}</Note>}
+      {engine.shadow_mode && draft.lockOn && (
+        <Note tone="warn">{engine.shadow_note}</Note>
+      )}
 
       <Row label="Если">
         {isSystem ? (

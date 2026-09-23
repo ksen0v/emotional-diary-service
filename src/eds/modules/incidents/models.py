@@ -28,9 +28,21 @@ ACTIVE = "active"
 LIFTED = "lifted"
 EXPIRED = "expired"
 
-# Коды инцидентов. Здесь только тот, который умеет создавать шаг 9;
-# violation, lock_breached и no_admission придут с системными триггерами.
-CODE_RULE_FIRED = "rule_fired"
+# Коды инцидентов (Архитектура ч.1 §6). Код отвечает на вопрос «что это было»,
+# а исход — «чем кончилось»; путать их нельзя, иначе история перестанет
+# объяснять себя.
+CODE_RULE_FIRED = "rule_fired"  # сработало правило трейдера
+CODE_VIOLATION = "violation"  # SR-1: сделка отмечена как нарушение
+CODE_LOCK_BREACHED = "lock_breached"  # SR-2: сделка во время блокировки
+CODE_NO_ADMISSION = "no_admission"  # SR-3: торговля без допуска
+
+# Человеческие заголовки. Живут рядом с кодами: строка уйдёт и на экран
+# инцидентов, и в уведомление, и собранная в двух местах разъедётся.
+CODE_TITLE = {
+    CODE_VIOLATION: "Несистемная сделка",
+    CODE_LOCK_BREACHED: "Сделка во время блокировки",
+    CODE_NO_ADMISSION: "Торговля без допуска",
+}
 
 
 class IncidentRow(Base):

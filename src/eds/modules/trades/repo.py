@@ -331,3 +331,47 @@ async def opened_between(
         .order_by(Trade.open_time)
     )
     return [(row[0], row[1], row[2]) for row in res]
+
+
+async def violations_of_day(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> list[tuple[uuid.UUID, str, dt.datetime, dt.datetime | None]]:
+    """Сделки дня, отмеченные нарушением. Вход системного триггера SR-1.
+
+    Порядок — по времени закрытия: тег появляется на закрытой сделке, и если
+    их несколько, инциденты должны лечь в том же порядке, в каком трейдер их
+    закрывал, а не в порядке выдачи базы.
+    """
+    res = await s.execute(
+        select(Trade.id, Trade.symbol, Trade.open_time, Trade.close_time)
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day == day,
+            Trade.marking == "violation",
+        )
+        .order_by(Trade.close_time, Trade.id)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in res]
+
+
+async def unmarked_closed_before(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date, moment: dt.datetime
+) -> list[tuple[uuid.UUID, str, dt.datetime | None]]:
+    """Неразмеченные сделки дня, закрытые раньше момента. Вход SR-4.
+
+    Именно по времени ЗАКРЫТИЯ: напоминание отсчитывается от того момента,
+    когда сделку стало можно разметить, а не когда она была открыта.
+    """
+    res = await s.execute(
+        select(Trade.id, Trade.symbol, Trade.close_time)
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day == day,
+            Trade.marking == "unreviewed",
+            Trade.is_open.is_(False),
+            Trade.close_time.is_not(None),
+            Trade.close_time <= moment,
+        )
+        .order_by(Trade.close_time, Trade.id)
+    )
+    return [(row[0], row[1], row[2]) for row in res]
