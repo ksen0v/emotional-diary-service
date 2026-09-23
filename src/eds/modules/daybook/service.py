@@ -23,13 +23,12 @@ GREEN = "green"
 RED = "red"
 DENIED = "denied"
 
-# Состояния дня из дизайна (машина состояний, §2). locked появится вместе
-# с блокировками (шаг 9): пока его некому выставить, и возвращать его было бы
-# обещанием, которого сервис не выполняет.
+# Состояния дня из дизайна (машина состояний, §2).
 STATE_NO_SOURCE = "no_source"
 STATE_NO_CHECK = "no_check"
 STATE_CHECK_FAILED = "check_failed"
 STATE_TRADING = "trading"
+STATE_LOCKED = "locked"
 STATE_SESSION_CLOSED = "session_closed"
 STATE_REVIEW_PENDING = "review_pending"
 
@@ -58,6 +57,7 @@ def state_of(
     *,
     has_source: bool,
     pending_review_day: dt.date | None = None,
+    lock_active: bool = False,
 ) -> str:
     """Состояние дня — одно слово, по которому фронт выбирает экран.
 
@@ -74,7 +74,11 @@ def state_of(
     if day is None or day.admission is None:
         return STATE_NO_CHECK
     if day.admission == DENIED:
+        # Блокировка не перебивает «нет допуска»: там дверь закрыта целиком,
+        # и показывать поверх неё вторую закрытую дверь незачем.
         return STATE_CHECK_FAILED
+    if lock_active:
+        return STATE_LOCKED
     if day.session_closed_at is not None:
         return STATE_SESSION_CLOSED
     return STATE_TRADING
@@ -250,13 +254,25 @@ def _restrictions(verdict: str) -> dict | None:
 
 
 async def close_session(
-    s: AsyncSession, user_id: uuid.UUID, day: dt.date, at: dt.datetime | None = None
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    day: dt.date,
+    at: dt.datetime | None = None,
+    *,
+    lock_active: bool = False,
 ) -> TradingDay:
     """Ручное закрытие сессии раньше границы дня.
 
-    Нужно, чтобы разбор случился сегодня, а не завтра. Блокировка закрыть сессию
-    не даст (шаг 9): иначе закрытие стало бы способом снять блокировку.
+    Нужно, чтобы разбор случился сегодня, а не завтра. Пока идёт блокировка,
+    сессию закрыть нельзя: иначе закрытие стало бы способом снять блокировку
+    (Архитектура ч.2 §3.5).
     """
+    if lock_active:
+        raise AppError(
+            "lock_active",
+            "Пока идёт блокировка, сессию закрыть нельзя.",
+            409,
+        )
     row = await repo.day_of(s, user_id, day)
     if row is None or row.session_opened_at is None:
         raise AppError("no_session", "Сессия за сегодня не открыта.", 409)

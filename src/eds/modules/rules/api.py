@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.contracts.trading_time import trading_day
 from eds.modules.rules import service
 from eds.platform import auth, db
 
@@ -164,10 +165,17 @@ async def metrics(
 @router.get("/rules", response_model=RulesOut)
 async def rules(
     user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
     s: AsyncSession = Depends(db.session),
 ) -> RulesOut:
     caps = await auth.source_capabilities(s, user.user_id)
-    data = await service.listing(s, user.user_id, caps)
+    data = await service.listing(
+        s,
+        user.user_id,
+        caps,
+        today=trading_day(dt.datetime.now(dt.UTC), prefs.timezone, prefs.day_cutoff),
+        shadow_mode=prefs.shadow_mode,
+    )
     # Чтение, которое пишет: досоздаёт системные правила, если их нет.
     await s.commit()
     return RulesOut(**data)

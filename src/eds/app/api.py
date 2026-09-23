@@ -18,6 +18,7 @@ from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.incidents import repo as incidents_repo
 from eds.modules.streaks import repo as streaks_repo
 from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import repo as trades_repo
@@ -66,6 +67,29 @@ async def sync(
         raise
     await s.commit()
     return report.as_dict()
+
+
+@router.post("/session/close")
+async def close_session(
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Закрыть сессию раньше границы дня, чтобы разбор случился сегодня.
+
+    Стоит в оркестрации, а не в daybook: пока идёт блокировка, закрывать
+    сессию нельзя — иначе закрытие стало бы способом её снять, — а про
+    блокировки знает другой модуль.
+    """
+    day = today.today_of(prefs)
+    lock = await incidents_repo.active_lock(s, user.user_id)
+    row = await daybook.close_session(s, user.user_id, day, lock_active=lock is not None)
+    await s.commit()
+    return {
+        "closed_at": row.session_closed_at,
+        "review": {"state": row.review_state, "day": day.isoformat()},
+    }
 
 
 # --- дневник ---

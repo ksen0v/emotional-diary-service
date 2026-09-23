@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import engine
 from eds.contracts.ingest import IngestContext, IngestReport
 from eds.contracts.source import TradeSource
 from eds.modules.identity import repo as identity_repo
@@ -22,7 +23,7 @@ from eds.modules.source.adapters.tmm.rest import TmmClient
 from eds.modules.source.adapters.tmm.source import TmmSource
 from eds.modules.source.models import Connection
 from eds.modules.trades import service as trades_service
-from eds.platform import crypto
+from eds.platform import auth, crypto
 from eds.platform.errors import AppError
 
 log = logging.getLogger("eds.pipeline")
@@ -129,13 +130,22 @@ async def sync(
     if connection.state != "connected":
         await source_repo.set_state(s, connection, "connected", None)
 
+    # Движок правил вызывается синхронно после батча (ТЗ 9.7): между приходом
+    # сделки и блокировкой не должно быть очереди, которую кто-то не разобрал.
+    prefs = await auth.prefs_of(s, user_id)
+    engine_report = await engine.after_ingest(
+        s, user_id, prefs, sorted(report.touched_days)
+    )
+
     log.info(
-        "сверка %s: получено %s, принято %s, переразмечено %s",
+        "сверка %s: получено %s, принято %s, переразмечено %s, сработало правил %s",
         connection.provider,
         report.received,
         report.inserted,
         report.remarked,
+        engine_report.fired,
     )
+    report.engine = engine_report.as_dict()
     return report
 
 

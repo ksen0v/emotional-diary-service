@@ -109,21 +109,8 @@ async def submit_check(
     return CheckOut(**result)
 
 
-@router.post("/session/close", response_model=SessionClosedOut)
-async def close_session(
-    user: auth.CurrentUser = Depends(auth.current_user),
-    prefs: auth.UserPrefs = Depends(auth.current_prefs),
-    _: None = Depends(auth.check_csrf),
-    s: AsyncSession = Depends(db.session),
-) -> SessionClosedOut:
-    """Закрыть сессию раньше границы дня, чтобы разбор случился сегодня."""
-    day = today_of(prefs)
-    row = await service.close_session(s, user.user_id, day)
-    await s.commit()
-    return SessionClosedOut(
-        closed_at=row.session_closed_at,
-        review={"state": row.review_state, "day": day.isoformat()},
-    )
+# Закрытие сессии переехало в оркестрацию (eds.app.api): оно должно знать,
+# идёт ли блокировка, а модуль daybook о блокировках знать не имеет права.
 
 
 # --- дневник и разбор ---

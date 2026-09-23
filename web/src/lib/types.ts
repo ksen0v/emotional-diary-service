@@ -272,8 +272,64 @@ export type DayState =
   | 'no_check'
   | 'check_failed'
   | 'trading'
+  | 'locked'
   | 'session_closed'
   | 'review_pending'
+
+// --- блокировка (шаг 9) ---
+
+// Три состояния, а не два: null — условие снятия выключено, false — включено
+// и не выполнено. На чек-листе экрана блокировки это разные строки.
+export type LockSatisfied = {
+  timer: boolean | null
+  review: boolean | null
+  buddy: boolean | null
+}
+
+export type BreachTrade = { trade_id: string; symbol: string; open_time: string }
+
+export type Lock = {
+  id: string
+  incident_id: string
+  rule_name: string
+  rule_text: string
+  started_at: string
+  timer_until: string | null
+  window_until: string
+  server_time: string
+  requires: { timer: boolean; review: boolean; buddy: boolean }
+  satisfied: LockSatisfied
+  can_lift: boolean
+  state: string
+  review_questions: { id: string; text: string; hint: string }[]
+  review_filled: boolean
+  unlock_short: string
+  unlock_text: string
+  // Доверенное лицо появится на шаге 13.
+  buddy: null
+  breach: { trades: BreachTrade[]; first: BreachTrade } | null
+}
+
+export type LockReviewResult = {
+  satisfied: LockSatisfied
+  lock_state: string
+  lifted: boolean
+  message: string
+}
+
+// Строка блока «Ближе всего к срабатыванию». Считает сервер целиком, включая
+// «2.9% из 5%»: фронт не знает ни приоритета связок, ни того, какое условие
+// держит правило.
+export type NearRule = {
+  rule_id: string
+  name: string
+  metric: string
+  metric_name: string
+  value_text: string
+  ratio: string
+  met: boolean
+  hot: boolean
+}
 
 export type Today = {
   day: string
@@ -283,7 +339,8 @@ export type Today = {
   shadow_mode: boolean
   admission: Admission | null
   session: { opened_at: string | null; closed_at: string | null }
-  lock: null
+  lock: Lock | null
+  near_rules: NearRule[]
   streak: Streak
   entry: DiaryEntry | null
   review: {

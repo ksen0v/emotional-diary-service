@@ -7,7 +7,7 @@
 
 import datetime as dt
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 
@@ -28,6 +28,11 @@ class IngestContext:
 class IngestReport:
     """Итог приёма порции. Числа нужны и в ответе API, и в логе сверки."""
 
+    # Дни, которых коснулась порция. Движку правил нужны именно они, а не
+    # «сегодня»: сверка после переподключения приносит и вчерашние сделки,
+    # и счётчики того дня обязаны сойтись.
+    touched_days: set[dt.date] = field(default_factory=set)
+
     received: int = 0
     inserted: int = 0
     remarked: int = 0
@@ -36,7 +41,11 @@ class IngestReport:
     skipped_open: int = 0
     skipped_unknown_account: int = 0
 
-    def as_dict(self) -> dict[str, int]:
+    # Что сделал движок правил на этой порции. Пусто до шага 9 и у путей,
+    # которые движок не зовут.
+    engine: dict | None = None
+
+    def as_dict(self) -> dict:
         return {
             "received": self.received,
             "inserted": self.inserted,
@@ -45,4 +54,5 @@ class IngestReport:
             "skipped_before_ingest_from": self.skipped_before_ingest_from,
             "skipped_open": self.skipped_open,
             "skipped_unknown_account": self.skipped_unknown_account,
+            "engine": self.engine,
         }

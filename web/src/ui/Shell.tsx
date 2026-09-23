@@ -3,7 +3,8 @@ import { api } from '../lib/api'
 import { useSetMe } from '../lib/auth'
 import { useToday } from '../pages/TodayPage'
 import type { Me, Today } from '../lib/types'
-import { dateTime, plural } from './format'
+import { LockedScreen } from './LockedScreen'
+import { ago, dateTime, plural } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
 // «Аналитика» — неактивная плашка: раздел обозначен, но экрана за ним нет.
@@ -125,6 +126,12 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           {children}
         </div>
       </div>
+
+      {/* Блокировка — состояние приложения, а не экран раздела: перекрытие
+          живёт здесь, поэтому оно появится в любом разделе и закроет собой
+          навигацию. «Перекрытия не закрываются» — за ними ничего нет, пока
+          условие не выполнено (Дизайн §1). */}
+      {today.data?.state === 'locked' && <LockedScreen today={today.data} />}
     </div>
   )
 }
@@ -199,14 +206,3 @@ function Sync({ today }: { today: Today | undefined }) {
   )
 }
 
-// «12 сек назад» вместо метки времени: вопрос к этому полю всегда один —
-// давно ли, — и отвечать на него вычитанием в голове не надо.
-function ago(iso: string): string {
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
-  if (seconds < 60) return `${seconds} сек назад`
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} мин назад`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours} ч назад`
-  return `${Math.round(hours / 24)} дн назад`
-}

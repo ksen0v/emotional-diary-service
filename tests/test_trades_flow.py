@@ -34,6 +34,7 @@ async def push(
     tags: list[str] | None = None,
     symbol: str = "BTCUSDT",
     minutes_ago: int = 5,
+    duration_sec: int = 300,
 ) -> httpx.Response:
     res = await client.post(
         "/api/v1/source/dev/trade",
@@ -45,7 +46,7 @@ async def push(
             "account_return_pct": pct,
             "tags": tags or [],
             "minutes_ago": minutes_ago,
-            "duration_sec": 300,
+            "duration_sec": duration_sec,
         },
     )
     assert res.status_code == 200, res.text

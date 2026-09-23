@@ -243,22 +243,6 @@ async def days_count(
     return res.scalar_one()
 
 
-async def day_returns(
-    s: AsyncSession, user_id: uuid.UUID, day: dt.date
-) -> list[tuple[Decimal, bool]]:
-    """Проценты и значимость сделок дня в порядке закрытия — вход для серии убытков."""
-    res = await s.execute(
-        select(Trade.account_return_pct, Trade.is_significant)
-        .where(
-            Trade.user_id == user_id,
-            Trade.trading_day == day,
-            Trade.is_open.is_(False),
-        )
-        .order_by(Trade.close_time, Trade.id)
-    )
-    return [(row[0], row[1]) for row in res]
-
-
 async def day_summaries(
     s: AsyncSession, user_id: uuid.UUID, since: dt.date, until: dt.date
 ) -> dict[dt.date, dict]:
@@ -299,3 +283,51 @@ async def day_summaries(
         }
         for row in res
     }
+
+
+async def day_facts(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> list[tuple[uuid.UUID, dt.datetime, dt.datetime, Decimal, Decimal, bool]]:
+    """Сделки дня в том виде, в каком их видит движок правил.
+
+    Шесть полей вместо целой сделки: движку не нужны ни символ, ни плечо,
+    ни разметка, и тянуть их значило бы обещать, что он на них смотрит.
+    """
+    res = await s.execute(
+        select(
+            Trade.id,
+            Trade.open_time,
+            Trade.close_time,
+            Trade.account_return_pct,
+            Trade.profit_usd,
+            Trade.is_significant,
+        )
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day == day,
+            Trade.is_open.is_(False),
+        )
+        .order_by(Trade.close_time, Trade.id)
+    )
+    return [tuple(row) for row in res]  # type: ignore[misc]
+
+
+async def opened_between(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.datetime, until: dt.datetime
+) -> list[tuple[uuid.UUID, str, dt.datetime]]:
+    """Сделки, ОТКРЫТЫЕ в окне. Вход compliance-проверки.
+
+    Именно открытые: сделка, открытая до блокировки и закрытая внутри неё,
+    нарушением не является (Архитектура ч.1 §7). Разница в одном слове,
+    а цена ошибки — несправедливо сгоревший стрик.
+    """
+    res = await s.execute(
+        select(Trade.id, Trade.symbol, Trade.open_time)
+        .where(
+            Trade.user_id == user_id,
+            Trade.open_time >= since,
+            Trade.open_time <= until,
+        )
+        .order_by(Trade.open_time)
+    )
+    return [(row[0], row[1], row[2]) for row in res]

@@ -2,6 +2,10 @@
 
 Здесь живут четыре решения, от которых зависит весь сервис, поэтому они вынесены
 в функции и покрыты тестами: торговый день сделки, значимость, разметка и хеш тегов.
+
+Серия убыточных сделок раньше считалась здесь. Теперь она в движке правил
+(`rules.engine.counters`) вместе с остальными показателями дня: два расчёта
+одного и того же однажды разошлись бы, и разбираться пришлось бы в двух местах.
 """
 
 import datetime as dt
@@ -27,7 +31,6 @@ __all__ = [
     "CurvePoint",
     "day_curve",
     "is_significant",
-    "loss_streak",
     "marking_of",
     "tags_hash",
     "trading_day",
@@ -104,23 +107,3 @@ def day_curve(points: list[tuple[dt.datetime, str, Decimal]]) -> list[CurvePoint
             )
         )
     return out
-
-
-def loss_streak(returns: list[tuple[Decimal, bool]]) -> int:
-    """Текущая серия убыточных сделок подряд (ТЗ 6.3).
-
-    Пыль прозрачна: сделка ниже порога значимости серию не продолжает и не
-    обнуляет. Без этого мелкая прибыль в три цента между двумя стопами спасала
-    бы от блокировки, а мелкий убыток изображал бы серию, которой не было.
-
-    Вход — в порядке закрытия сделок: пары (процент от депозита, значимость).
-    """
-    streak = 0
-    for account_return_pct, significant in returns:
-        if not significant:
-            continue
-        if account_return_pct < 0:
-            streak += 1
-        else:
-            streak = 0
-    return streak

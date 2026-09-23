@@ -69,6 +69,19 @@ export function dateTime(iso: string | null): string {
   })
 }
 
+// «12 сек назад» вместо метки времени: вопрос к синку всегда один — давно ли, —
+// и отвечать на него вычитанием в голове не надо. Живёт здесь, а не в шапке:
+// та же строка стоит в подвале экрана блокировки.
+export function ago(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  if (seconds < 60) return `${seconds} сек назад`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} мин назад`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} ч назад`
+  return `${Math.round(hours / 24)} дн назад`
+}
+
 export function duration(seconds: number | null): string {
   if (seconds === null) return '—'
   if (seconds < 60) return `${seconds} с`

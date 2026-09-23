@@ -62,6 +62,12 @@ WIPE = (
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM incidents.lock_reviews WHERE lock_id IN ("
+    " SELECT id FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM incidents.incidents WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM rules.evaluations WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM rules.day_counters WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM rules.rules WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM streaks.day_marks WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM streaks.state WHERE user_id IN (SELECT id FROM test_users)",

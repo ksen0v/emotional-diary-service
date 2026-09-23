@@ -93,6 +93,7 @@ async def _ingest_one(
             updated_at=dt.datetime.now(dt.UTC),
         )
         await repo.insert(s, trade, _tag_rows(item))
+        report.touched_days.add(trade.trading_day)
         await bus.publish(
             s,
             ev.TRADES_INGESTED,
@@ -117,6 +118,7 @@ async def _ingest_one(
     # Изменилась разметка. Событие идёт только на это: обновление сделки
     # приходит на любое изменение, а движку правил интересен лишь тег.
     previous = existing.marking
+    report.touched_days.add(existing.trading_day)
     existing.marking = marking
     existing.tags_hash = tags_hash
     existing.marked_by = "source_tag"
@@ -325,20 +327,15 @@ def quantize_pct(value: Decimal | None) -> Decimal | None:
 
 
 async def day_counters(s: AsyncSession, user_id: uuid.UUID, day: dt.date) -> dict:
-    """Счётчики торгового дня: то, на что смотрят правила и экран «Сегодня».
+    """Счётчики дня по разметке и деньгам: то, что считается из сделок.
 
-    Три показателя из ТЗ 6.3 считаются здесь, а не в движке правил: они
-    описывают день, а не правило, и обнуляются на границе дня сами собой —
-    потому что считаются по сделкам этого дня.
+    Три показателя правил (серия убытков, просадка от пика, убыток суммарно)
+    здесь не считаются: их считает движок в модуле rules, и второй расчёт
+    рядом однажды разошёлся бы с первым. Оркестрация складывает обе половины
+    в один блок экрана.
     """
     totals_row = await repo.totals(s, user_id, (day, day), None)
-    points = await curve(s, user_id, day)
-    returns = await repo.day_returns(s, user_id, day)
     summary = (await repo.day_summaries(s, user_id, day, day)).get(day)
-
-    equity = points[-1].equity_pct if points else Decimal("0")
-    peak = points[-1].peak_pct if points else Decimal("0")
-    drawdown = peak - equity
 
     return {
         "all_trades": totals_row["count"],
@@ -349,17 +346,5 @@ async def day_counters(s: AsyncSession, user_id: uuid.UUID, day: dt.date) -> dic
         "emotion_cost_usd": quantize_money(
             summary["emotion_cost_usd"] if summary else Decimal("0")
         ),
-        "loss_streak": normalize.loss_streak(returns),
-        "equity_pct": quantize_pct(equity),
-        "peak_pct": quantize_pct(peak),
-        "drawdown_pct": quantize_pct(drawdown),
-        # «Убыток суммарно» — сумма результата дня, если она отрицательная (ТЗ 6.3).
-        # Ноль при прибыльном дне, а не отрицательное число: показатель назван
-        # убытком, и отрицательный убыток читался бы как загадка.
-        "loss_sum_pct": quantize_pct(-equity if equity < 0 else Decimal("0")),
         "profit_usd": quantize_money(totals_row["profit_usd"]),
-        # Источник без открытых позиций не даёт нереализованного результата.
-        # null, а не ноль: ноль значил бы «позиций нет», а это другое.
-        "unrealized_pct": None,
-        "drawdown_full_pct": None,
     }

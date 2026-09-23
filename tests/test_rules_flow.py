@@ -102,9 +102,10 @@ async def test_system_rules_appear_by_themselves(app_client: httpx.AsyncClient) 
         assert rule["fired_last_30d"] == 0
         assert rule["human_text"].startswith("Если ")
 
-    # Экран обязан сказать, что правила пока не срабатывают: тишина читалась бы
-    # как «работает».
-    assert out["engine"]["active"] is False
+    # Экран обязан сказать, что именно уже работает: движок считает
+    # пользовательские правила, а системные триггеры — ещё нет (шаг 10).
+    assert out["engine"]["active"] is True
+    assert out["engine"]["system_active"] is False
 
 
 async def test_system_rules_are_not_duplicated(app_client: httpx.AsyncClient) -> None:

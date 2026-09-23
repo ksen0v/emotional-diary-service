@@ -1,18 +1,20 @@
-"""Логика модуля rules: создание, правка и описание правил.
+"""Логика модуля rules: создание, правка, описание правил и движок.
 
-Движка здесь нет — он появится на шаге 9. Поэтому в этом файле нет ни одной
-функции, которая смотрит на сделки: правило пока только хранится, проверяется
-на осмысленность и описывается словами.
+Движок не смотрит на сделки напрямую: факты о них приходят контрактом
+`TradeFact`, а собирает их оркестрация. Поэтому модуль по-прежнему не знает
+ни о схеме trades, ни о настройках трейдера.
 """
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.contracts.rules import Firing, TradeFact
 from eds.modules.rules import dictionary as dic
-from eds.modules.rules import human, repo, validate
+from eds.modules.rules import engine, human, repo, validate
 from eds.modules.rules import system as sysrules
 from eds.modules.rules.models import RuleRow
 from eds.platform.errors import AppError, not_found
@@ -23,9 +25,8 @@ from eds.platform.errors import AppError, not_found
 # заглушки, которая примет настройку и никому ничего не отправит.
 HAS_CONFIRMED_CONTACT = False
 
-# Счётчик срабатываний считает движок (шаг 9). До него — честный ноль,
-# а не правдоподобное число из прототипа.
-FIRED_UNKNOWN = 0
+# Окно счётчика срабатываний в карточке правила — как в прототипе.
+FIRED_WINDOW_DAYS = 30
 
 
 async def ensure_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
@@ -46,7 +47,7 @@ async def ensure_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
         )
 
 
-def rule_out(row: RuleRow) -> dict[str, Any]:
+def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
     """Правило для API (Архитектура ч.2 §3.6)."""
     is_system = row.kind == "system"
     definition = sysrules.BY_CODE.get(row.system_code or "")
@@ -75,7 +76,7 @@ def rule_out(row: RuleRow) -> dict[str, Any]:
         "if_text": if_text,
         "human_text": human.sentence(if_text, row.actions, row.unlock),
         "summary": summary,
-        "fired_last_30d": FIRED_UNKNOWN,
+        "fired_last_30d": fired_last_30d,
         "version": row.version,
         "updated_at": row.updated_at,
     }
@@ -85,22 +86,37 @@ def rule_out(row: RuleRow) -> dict[str, Any]:
 
 
 async def listing(
-    s: AsyncSession, user_id: uuid.UUID, capabilities: dict[str, Any] | None
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    capabilities: dict[str, Any] | None,
+    *,
+    today: dt.date | None = None,
+    shadow_mode: bool = False,
 ) -> dict[str, Any]:
     await ensure_system_rules(s, user_id)
     rows = await repo.live(s, user_id)
     _ready, blocked = dic.available(capabilities)
+    day = today or dt.datetime.now(dt.UTC).date()
+    fired = await repo.fired_counts(
+        s, user_id, day - dt.timedelta(days=FIRED_WINDOW_DAYS)
+    )
     return {
-        "rules": [rule_out(row) for row in rows],
+        "rules": [rule_out(row, fired.get(row.id, 0)) for row in rows],
         # Правило могло быть собрано при другом источнике. Молча его прятать
         # нельзя, поэтому фронт получает список метрик, которых сейчас нет,
         # и может пометить такое правило.
         "unavailable_metrics": [m.key for m in blocked],
         "engine": {
-            # Прямым полем, а не подразумеваемым нулём: экран обязан сказать,
-            # что правила пока не срабатывают, иначе тишина читается как «работает».
-            "active": False,
-            "note": "Правила сохраняются, но ещё не срабатывают: движок появится на шаге 9.",
+            # Прямым полем, а не подразумеваемым состоянием: экран обязан
+            # сказать, что именно уже срабатывает, а что ещё нет — иначе
+            # тишина системных карточек читается как «работает».
+            "active": True,
+            "system_active": False,
+            "shadow_mode": shadow_mode,
+            "note": (
+                "Правила считаются на каждой принятой сделке. Системные триггеры "
+                "SR-1…SR-4 ещё не срабатывают — они появятся на шаге 10."
+            ),
         },
     }
 
@@ -308,3 +324,167 @@ def metrics_catalog(
         "Доверенное лицо появится на шаге 13: нужен Telegram-бот и двойное согласие."
     )
     return catalog
+
+
+# --- движок (шаг 9) ---
+
+# Сколько правил показывать в блоке «Ближе всего к срабатыванию».
+# Три, потому что блок в прототипе не прокручивается, а смысл его в том,
+# чтобы одним взглядом увидеть ближайшую границу, а не весь список правил.
+NEAR_LIMIT = 3
+
+# С какого прогресса строка подсвечивается янтарным. В прототипе янтарная
+# верхняя строка на 58% и серая вторая на 50%, поэтому подсвечивается ровно
+# одна — ближайшая, и только когда она прошла половину пути.
+HOT_RATIO = Decimal("0.5")
+
+
+def _jsonable(value: Any) -> Any:
+    """Снимок счётчиков в JSONB. Decimal и UUID json.dumps не умеет."""
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
+
+
+async def run_day(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    day: dt.date,
+    facts: list[TradeFact],
+    significance_pct: Decimal,
+) -> tuple[engine.Counters, list[Firing]]:
+    """Пройти день сделка за сделкой и собрать срабатывания.
+
+    Проход именно по сделкам, а не по итогу дня: порция из сверки может
+    принести три сделки разом, и если правило выполнилось на второй, а третья
+    его отменила, блокировка всё равно должна была включиться. Итог дня такой
+    случай потерял бы молча.
+
+    **Правило срабатывает на переходе, а не на каждой сделке, пока условие
+    выполняется.** Иначе «2 убыточных подряд» дало бы новую блокировку на
+    третьей, четвёртой и пятой убыточной сделке — по инциденту на каждую.
+    Срабатывание — событие, а не состояние; предыдущее состояние условия
+    берётся из журнала проверок, поэтому повторный проход ничего не добавляет.
+    """
+    rules = await repo.active_user_rules(s, user_id)
+    done = await repo.evaluations_of_day(s, user_id, day)
+
+    counters = engine.Counters()
+    was_met: dict[uuid.UUID, bool] = {}
+    firings: list[Firing] = []
+
+    for fact in sorted(facts, key=lambda f: (f.close_time, str(f.trade_id))):
+        counters = engine.apply(counters, fact, significance_pct)
+        trigger_ref = f"trade:{fact.trade_id}"
+
+        for rule in rules:
+            # Сделка старше самого правила его не касается: иначе только что
+            # собранное правило сработало бы задним числом на утренних стопах.
+            if fact.close_time < rule.created_at:
+                continue
+
+            met = engine.evaluate(rule.conditions, counters)
+            already = done.get((rule.id, trigger_ref))
+            if already is not None:
+                was_met[rule.id] = bool(already.snapshot.get("met", already.fired))
+                continue
+
+            fired = met and not was_met.get(rule.id, False)
+            snapshot = _jsonable({**counters.as_dict(), "met": met})
+            written = await repo.record_evaluation(
+                s,
+                user_id,
+                rule.id,
+                day,
+                trigger_ref=trigger_ref,
+                fired=fired,
+                snapshot=snapshot,
+            )
+            was_met[rule.id] = met
+            if fired and written:
+                firings.append(
+                    Firing(
+                        rule_id=rule.id,
+                        rule_name=rule.name,
+                        rule_text=rule_out(rule)["human_text"],
+                        rule_version=rule.version,
+                        day=day,
+                        trigger_ref=trigger_ref,
+                        trade_id=fact.trade_id,
+                        actions=dict(rule.actions),
+                        unlock=dict(rule.unlock),
+                        snapshot=snapshot,
+                    )
+                )
+
+    await repo.save_counters(
+        s,
+        user_id,
+        day,
+        {**counters.as_dict(), "last_trade_id": counters.last_trade_id},
+    )
+    return counters, firings
+
+
+async def near(
+    s: AsyncSession, user_id: uuid.UUID, counters: engine.Counters
+) -> list[dict[str, Any]]:
+    """Блок «Ближе всего к срабатыванию» (Дизайн Э-04, блок 4).
+
+    Считается на сервере целиком, включая строку «2.9% из 5%»: фронт не знает
+    ни приоритета связок, ни того, какое из условий держит правило.
+    """
+    rules = await repo.active_user_rules(s, user_id)
+    rows: list[dict[str, Any]] = []
+    for rule in rules:
+        point = engine.progress(rule.conditions, counters)
+        if point is None:
+            continue
+        metric = dic.BY_KEY.get(point.metric)
+        suffix = "%" if metric and metric.type == dic.DECIMAL else ""
+        rows.append(
+            {
+                "rule_id": str(rule.id),
+                "name": rule.name,
+                "metric": point.metric,
+                "metric_name": metric.name if metric else point.metric,
+                "value_text": (
+                    f"{human.number(point.value)}{suffix} из "
+                    f"{human.number(point.threshold)}{suffix}"
+                ),
+                "ratio": point.ratio,
+                "met": point.met,
+            }
+        )
+
+    rows.sort(key=lambda r: (r["ratio"], r["name"]), reverse=True)
+    rows = rows[:NEAR_LIMIT]
+    for i, row in enumerate(rows):
+        # Янтарным — только ближайшее правило и только со второй половины пути.
+        row["hot"] = bool(i == 0 and row["ratio"] >= HOT_RATIO)
+    return rows
+
+
+async def counters_out(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> engine.Counters:
+    """Счётчики дня из кеша. Пустые, если движок по этому дню ещё не ходил."""
+    row = await repo.counters_of(s, user_id, day)
+    if row is None:
+        return engine.Counters()
+    return engine.Counters(
+        loss_streak=row.loss_streak,
+        equity_pct=row.equity_pct,
+        peak_pct=row.peak_pct,
+        drawdown_pct=row.drawdown_pct,
+        loss_sum_pct=row.loss_sum_pct,
+        significant_trades=row.significant_trades,
+        all_trades=row.all_trades,
+        last_trade_id=row.last_trade_id,
+        unrealized_pct=row.unrealized_pct,
+        drawdown_full_pct=row.drawdown_full_pct,
+    )

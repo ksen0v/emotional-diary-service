@@ -4,11 +4,11 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eds.modules.rules.models import RuleRow
+from eds.modules.rules.models import DayCounterRow, EvaluationRow, RuleRow
 from eds.modules.rules.system import ORDER
 
 
@@ -150,3 +150,127 @@ async def save(s: AsyncSession, row: RuleRow, *, bump_version: bool) -> RuleRow:
 async def mark_deleted(s: AsyncSession, row: RuleRow) -> None:
     row.deleted_at = _now()
     await s.flush()
+
+
+# --- движок: состояние дня и журнал проверок (шаг 9) ---
+
+
+async def active_user_rules(s: AsyncSession, user_id: uuid.UUID) -> list[RuleRow]:
+    """Правила, которые движок проверяет по счётчикам дня.
+
+    Только пользовательские: у системных условий в базе нет, они в коде
+    обработчика и появятся на шаге 10. Выключенные не проверяются, удалённые
+    тоже — но из базы не исчезают, на них ссылаются инциденты.
+    """
+    res = await s.execute(
+        select(RuleRow).where(
+            RuleRow.user_id == user_id,
+            RuleRow.deleted_at.is_(None),
+            RuleRow.enabled.is_(True),
+            RuleRow.kind == "user",
+        )
+    )
+    return sorted(res.scalars(), key=lambda r: r.created_at)
+
+
+async def counters_of(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> DayCounterRow | None:
+    res = await s.execute(
+        select(DayCounterRow).where(
+            DayCounterRow.user_id == user_id, DayCounterRow.day == day
+        )
+    )
+    return res.scalar_one_or_none()
+
+
+async def save_counters(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date, values: dict[str, Any]
+) -> None:
+    """Записать состояние дня целиком.
+
+    Upsert, а не «прочитать и обновить»: строка — производная от сделок дня,
+    и переписывать её целиком дешевле и безопаснее, чем сливать поля.
+    """
+    stmt = (
+        pg_insert(DayCounterRow)
+        .values(user_id=user_id, day=day, updated_at=_now(), **values)
+        .on_conflict_do_update(
+            index_elements=[DayCounterRow.user_id, DayCounterRow.day],
+            set_={**values, "updated_at": _now()},
+        )
+    )
+    await s.execute(stmt)
+
+
+async def evaluations_of_day(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date
+) -> dict[tuple[uuid.UUID, str], EvaluationRow]:
+    """Уже сделанные проверки дня, ключом (правило, повод).
+
+    Движок читает их целиком перед проходом: по ним он и пропускает
+    обработанное, и узнаёт, выполнялось ли условие на прошлой сделке.
+    """
+    res = await s.execute(
+        select(EvaluationRow).where(
+            EvaluationRow.user_id == user_id, EvaluationRow.day == day
+        ).order_by(EvaluationRow.id)
+    )
+    return {(row.rule_id, row.trigger_ref): row for row in res.scalars()}
+
+
+async def record_evaluation(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    day: dt.date,
+    *,
+    trigger_ref: str,
+    fired: bool,
+    snapshot: dict[str, Any],
+) -> bool:
+    """Записать проверку. False — такая уже была, значит обрабатывать не надо.
+
+    Идемпотентность стоит в базе, а не в проверке «а не записывали ли мы уже»:
+    одно и то же событие приходит и из потока, и из сверки, и два запроса
+    могут прийти одновременно.
+    """
+    stmt = (
+        pg_insert(EvaluationRow)
+        .values(
+            rule_id=rule_id,
+            user_id=user_id,
+            day=day,
+            trigger_ref=trigger_ref,
+            fired=fired,
+            snapshot=snapshot,
+            created_at=_now(),
+        )
+        .on_conflict_do_nothing(
+            index_elements=[EvaluationRow.rule_id, EvaluationRow.trigger_ref]
+        )
+        .returning(EvaluationRow.id)
+    )
+    res = await s.execute(stmt)
+    return res.first() is not None
+
+
+async def fired_counts(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.date
+) -> dict[uuid.UUID, int]:
+    """Сколько раз каждое правило сработало начиная с даты.
+
+    Счётчик в карточке правила решает практическую задачу: правило,
+    сработавшее сорок раз за месяц, настроено неверно, и это видно из списка
+    без всякой аналитики (Дизайн Э-11).
+    """
+    res = await s.execute(
+        select(EvaluationRow.rule_id, func.count())
+        .where(
+            EvaluationRow.user_id == user_id,
+            EvaluationRow.day >= since,
+            EvaluationRow.fired.is_(True),
+        )
+        .group_by(EvaluationRow.rule_id)
+    )
+    return {row[0]: row[1] for row in res}

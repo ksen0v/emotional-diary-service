@@ -33,12 +33,34 @@ async def on_tag_dictionary_changed(event: bus.Event) -> None:
     log.info("словарь тегов изменён: переразмечено сделок — %s", changed)
 
 
+async def on_marking_changed(event: bus.Event) -> None:
+    """Разметка сделки изменилась → пересчитать день движком.
+
+    Три показателя ТЗ 6.3 от разметки не зависят, поэтому сейчас по этому пути
+    ничего не срабатывает, и это честный ноль, а не забытая ветка. Точка входа
+    нужна тег-триггеру SR-1: он появится на шаге 10 и включится именно здесь.
+    """
+    from eds.app import engine
+
+    user_id = uuid.UUID(event.payload["user_id"])
+    day = dt.date.fromisoformat(event.payload["trading_day"])
+    async with session_factory()() as s:
+        prefs = await auth.prefs_of(s, user_id)
+        await engine.run_day(s, user_id, prefs, day)
+        await s.commit()
+
+
 def all_consumers() -> list[bus.Consumer]:
     return [
         bus.Consumer(
             "remark_on_tags",
             on_tag_dictionary_changed,
             types=(ev.SOURCE_TAG_DICTIONARY_CHANGED,),
+        ),
+        bus.Consumer(
+            "engine_on_marking",
+            on_marking_changed,
+            types=(ev.TRADES_MARKING_CHANGED,),
         ),
         bus.Consumer(
             "streak_on_day_change",

@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import engine
 from eds.app import streaks as app_streaks
 from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.daybook import periods
@@ -44,9 +45,16 @@ async def build(
     connection = await source_repo.active_connection(s, user_id)
     day_row = await daybook_repo.day_of(s, user_id, day)
     check_row = await daybook_repo.check_of(s, user_id, day)
-    counters = await trades_service.day_counters(s, user_id, day)
     pending_day = await daybook.pending_review(s, user_id, day)
     entry_row = await daybook_repo.entry_of(s, user_id, periods.DAY, day)
+
+    # Блокировка, правила у границы и счётчики движка. Здесь же ленивое
+    # снятие: процесса границы дня пока нет, а блокировка, у которой все
+    # условия выполнены, обязана сняться без перезагрузки чужими руками.
+    live = await engine.today_block(s, user_id, prefs, day, now=now)
+    counters = _counters_block(
+        await trades_service.day_counters(s, user_id, day), live["counters"]
+    )
 
     # Стрик пересчитываем на чтении главной страницы: отдельного процесса,
     # который делал бы это ночью, пока нет, а показывать вчерашнюю серию
@@ -54,7 +62,10 @@ async def build(
     await app_streaks.refresh(s, user_id, prefs, today=day)
 
     state = daybook.state_of(
-        day_row, has_source=connection is not None, pending_review_day=pending_day
+        day_row,
+        has_source=connection is not None,
+        pending_review_day=pending_day,
+        lock_active=live["lock"] is not None,
     )
 
     return {
@@ -68,10 +79,11 @@ async def build(
             "opened_at": day_row.session_opened_at if day_row else None,
             "closed_at": day_row.session_closed_at if day_row else None,
         },
-        # Блокировки — шаг 9, стрик — шаг 7. null здесь означает «этого ещё
-        # нет в сервисе», и фронт по нему показывает заглушку вместо пустого
-        # блока с нулями.
-        "lock": None,
+        "lock": live["lock"],
+        # Блок «Ближе всего к срабатыванию» (Дизайн Э-04, блок 4). В контракте
+        # ч.2 §3.5 его нет — блок появился в прототипе, — но собирается он там же,
+        # где весь экран: одним запросом, и считается целиком на сервере.
+        "near_rules": live["near_rules"],
         "streak": await streaks_service.state_out(s, user_id, day),
         "entry": (
             None
@@ -101,6 +113,29 @@ async def build(
             "pass_score": prefs.pass_score,
             "min_score": prefs.min_score,
         },
+    }
+
+
+def _counters_block(marking: dict, counters) -> dict:
+    """Счётчики дня из двух половин: разметка из trades, показатели из движка.
+
+    Две половины, потому что считают их разные модули и считают по-разному:
+    разметка это запросы с группировкой, показатели правил — проход по сделкам
+    в порядке закрытия. Складывает их оркестрация, а не один из модулей.
+    """
+    return {
+        **marking,
+        "all_trades": counters.all_trades,
+        "significant_trades": counters.significant_trades,
+        "loss_streak": counters.loss_streak,
+        "equity_pct": trades_service.quantize_pct(counters.equity_pct),
+        "peak_pct": trades_service.quantize_pct(counters.peak_pct),
+        "drawdown_pct": trades_service.quantize_pct(counters.drawdown_pct),
+        "loss_sum_pct": trades_service.quantize_pct(counters.loss_sum_pct),
+        # Источник без открытых позиций их не даёт. null, а не ноль: ноль
+        # значил бы «позиций нет», а это другое (Архитектура ч.2 §3.5).
+        "unrealized_pct": trades_service.quantize_pct(counters.unrealized_pct),
+        "drawdown_full_pct": trades_service.quantize_pct(counters.drawdown_full_pct),
     }
 
 

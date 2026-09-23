@@ -5,9 +5,10 @@ import { ApiError, api } from '../lib/api'
 import type { Curve, Feed, Today } from '../lib/types'
 import { DayCurve } from '../ui/DayCurve'
 import { EntryEditor } from '../ui/EntryEditor'
+import { NearRules } from '../ui/NearRules'
 import { FreezeDay, StreakCard } from '../ui/StreakCard'
 import { Stub } from '../ui/Stub'
-import { duration, money, pct, pnlColor, time } from '../ui/format'
+import { duration, money, pct, pctPlain, pnlColor, time } from '../ui/format'
 
 export function useToday() {
   return useQuery<Today>({
@@ -259,11 +260,11 @@ function PreSession({ today }: { today: Today }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', flexGrow: 1, minHeight: 200 }}>
-          <div className="card" style={{ width: 636, maxWidth: '100%', padding: '14px 18px' }}>
-            <div className="klabel">Ближе всего к срабатыванию</div>
-            <div className="hint" style={{ marginTop: 10 }}>
-              Правила начнут считаться после открытия сессии
-            </div>
+          <div style={{ width: 636, maxWidth: '100%' }}>
+            <NearRules
+              rules={today.near_rules}
+              note="Правила считаются по сделкам дня — до первой сделки считать нечего."
+            />
           </div>
           <div className="card" style={{ flexGrow: 1, minWidth: 260, padding: '14px 18px' }}>
             <div className="klabel">Запись за сегодня</div>
@@ -425,10 +426,9 @@ function DayScreen({ today }: { today: Today }) {
             minHeight: 0,
           }}
         >
-          <Stub
-            title="Ближе всего к срабатыванию"
-            step={9}
-            what="Правило с полосой прогресса: видно, что подходишь к границе, до того как её пересечёшь."
+          <NearRules
+            rules={today.near_rules}
+            note="Собери правило из показателей дня — здесь будет видно, насколько ты близко к его границе."
           />
           <Stub
             title="Инциденты сегодня"
@@ -575,10 +575,12 @@ function Tiles({ today, empty }: { today: Today; empty?: boolean }) {
         sub={dash(`покрытие ${Number(c.coverage_pct).toFixed(0)}%`)}
         color={!empty && c.violations > 0 ? 'var(--bad)' : undefined}
       />
+      {/* «Убыток суммарно» показываем величиной, без знака: плюс читался бы
+          как прибыль, хотя показатель называется убытком. */}
       <Tile
         label="Убытков подряд"
         value={String(c.loss_streak)}
-        sub={c.loss_streak > 0 ? `суммарно ${pct(c.loss_sum_pct)}` : 'серии нет'}
+        sub={c.loss_streak > 0 ? `суммарно ${pctPlain(c.loss_sum_pct)}` : 'серии нет'}
         color={!empty && c.loss_streak > 1 ? 'var(--bad)' : undefined}
       />
       <Tile
