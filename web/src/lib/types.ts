@@ -588,6 +588,9 @@ export type RulesDictionary = {
   unlock_conditions: UnlockCondition[]
   buddy_available: boolean
   buddy_note: string
+  // Куда алерт уходит сегодня. Фраза правила говорит «в Telegram» — она
+  // описывает правило; заметка говорит про готовность канала.
+  alert_note: string
 }
 
 export type RuleCondition = {

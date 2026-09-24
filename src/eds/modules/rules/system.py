@@ -38,6 +38,13 @@ SYSTEM_ACTIVE = True
 # сделки, разбирает прошлый день и пересчитывает стрик — шаг 11.
 RETRO_ACTIVE = False
 
+# Сигнал доверенному лицу. ТЗ 6.5 даёт его SR-2 и SR-3 по умолчанию, но
+# контакта с двойным согласием не существует до шага 13, и ТЗ 6.8 запрещает
+# слать сигнал неподтверждённому контакту. Пока флаг опущен, `actions.buddy`
+# у системных правил выключен — иначе правило лежало бы в базе в виде,
+# который собственная валидация не пропускает, и его нельзя было бы сохранить.
+BUDDY_ACTIVE = False
+
 
 def pending_of(code: str) -> dict[str, str] | None:
     """Что у этого триггера ещё не работает. None — работает целиком.
@@ -67,6 +74,16 @@ def pending_of(code: str) -> dict[str, str] | None:
                 "появятся на шаге 11."
             ),
         }
+    if code in (SR2, SR3) and not BUDDY_ACTIVE:
+        return {
+            "short": "без сигнала другу",
+            "text": (
+                "По ТЗ 6.5 этот триггер должен послать сигнал доверенному лицу. "
+                "Пока он этого не делает: контакт с двойным согласием появится "
+                "на шаге 13, а слать сигнал неподтверждённому контакту нельзя "
+                "(ТЗ 6.8). Инцидент записывается и стрик сгорает в любом случае."
+            ),
+        }
     return None
 
 
@@ -75,16 +92,27 @@ class SystemRule:
     code: str
     name: str
     if_template: str
-    summary: str
+    summary_base: str
     actions: dict[str, Any]
     unlock: dict[str, Any]
     editable: tuple[str, ...] = field(default=())
+    # Последствие, которого нет в словаре действий ТЗ 6.4, но которое триггер
+    # производит всегда: сгоревший стрик у SR-2 и SR-3. Без него фраза правила
+    # описывала бы только алерт и выглядела бы безобидно.
+    consequence: str = ""
 
     def if_text(self, actions: dict[str, Any]) -> str:
         minutes = (actions or {}).get("remind_after_minutes")
         if "{minutes}" not in self.if_template:
             return self.if_template
         return self.if_template.format(minutes=minutes)
+
+    def summary(self, actions: dict[str, Any]) -> str:
+        """Строка карточки. Считается от действий, а не берётся константой:
+        иначе карточка продолжит обещать сигнал другу после того, как его
+        выключили, — и сама станет тем, от чего мы лечили экран правил."""
+        tail = ", сигнал другу" if (actions or {}).get("buddy") else ""
+        return self.summary_base + tail
 
 
 # Порядок задаёт порядок карточек в списке: сверху то, что срабатывает чаще.
@@ -94,8 +122,11 @@ SYSTEM_RULES: tuple[SystemRule, ...] = (
         name="Несистемная сделка",
         if_template="сделка отмечена как нарушение",
         # Текст карточки взят из прототипа дословно.
-        summary="Блокировка до конца дня",
+        summary_base="Блокировка до конца дня",
         actions={"alert": True, "lock": {"enabled": True, "minutes": None}, "buddy": False},
+        # Длительность не задана — блокировка принадлежит торговому дню сделки
+        # и держится до его границы (ТЗ 4.4). «Таймер» у неё означает ровно
+        # это: ждать до конца дня, раньше снятия нет.
         unlock={"timer": True, "review": True, "buddy": False},
         editable=("actions.buddy", "actions.lock.minutes", "unlock"),
     ),
@@ -103,27 +134,45 @@ SYSTEM_RULES: tuple[SystemRule, ...] = (
         code=SR2,
         name="Сделка при блокировке",
         if_template="сделка открыта во время активной блокировки",
-        summary="Сброс стрика, сигнал другу",
-        actions={"alert": True, "lock": {"enabled": True, "minutes": None}, "buddy": True},
-        unlock={"timer": True, "review": True, "buddy": False},
-        editable=("actions.buddy", "actions.lock.minutes", "unlock"),
+        summary_base="Сброс стрика",
+        # Блокировки у SR-2 нет, и это не упрощение. Он срабатывает ровно
+        # тогда, когда блокировка уже идёт, а вторая активная невозможна:
+        # в схеме стоит частичный уникальный индекс `one_active_lock`.
+        # Обещать в карточке блокировку, которую негде завести, значит врать.
+        actions={
+            "alert": True,
+            "lock": {"enabled": False, "minutes": None},
+            "buddy": BUDDY_ACTIVE,
+        },
+        unlock={"timer": False, "review": False, "buddy": False},
+        editable=("actions.buddy",),
+        consequence="стрик за этот день сгорит",
     ),
     SystemRule(
         code=SR3,
         name="Торговля без допуска",
         if_template="есть сделки без пройденного пре-маркет чека",
-        summary="Сброс стрика, сигнал другу",
-        # Длительность не настраивается: день без допуска закрыт целиком
-        # (ТЗ 5.2), и «заблокировать на 30 минут» противоречило бы этому.
-        actions={"alert": True, "lock": {"enabled": True, "minutes": None}, "buddy": True},
-        unlock={"timer": False, "review": True, "buddy": False},
-        editable=("actions.buddy", "unlock"),
+        summary_base="Сброс стрика",
+        # Блокировки нет: ТЗ 5.2 и 6.5 перечисляют действия SR-3 дважды и
+        # блокировку не называют ни разу. День без допуска уже закрыт экраном
+        # «допуска на сегодня нет», и вторая закрытая дверь поверх первой
+        # ничего не добавляет — то же решение, что поставило `locked`
+        # после `check_failed` на шаге 9. Расхождение с карточкой SR-3
+        # в прототипе RuleBuilder названо вслух в README.
+        actions={
+            "alert": True,
+            "lock": {"enabled": False, "minutes": None},
+            "buddy": BUDDY_ACTIVE,
+        },
+        unlock={"timer": False, "review": False, "buddy": False},
+        editable=("actions.buddy",),
+        consequence="стрик за этот день сгорит",
     ),
     SystemRule(
         code=SR4,
         name="Неразмеченная сделка",
         if_template="сделка закрыта и не размечена дольше {minutes} минут",
-        summary="Напоминание разметить сделку",
+        summary_base="Напоминание разметить сделку",
         actions={
             "alert": True,
             "lock": {"enabled": False, "minutes": None},

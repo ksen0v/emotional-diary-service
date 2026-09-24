@@ -160,11 +160,14 @@ async def test_late_tag_has_its_own_flag_on_sr1(
 
     assert sysrules.SYSTEM_ACTIVE is True
     assert sysrules.RETRO_ACTIVE is False
-    # SR-1 продолжает говорить про поздний тег…
+    assert sysrules.BUDDY_ACTIVE is False
+    # У SR-1 своё «ещё не готово» — поздний тег (шаг 11).
     assert sysrules.pending_of(sysrules.SR1) is not None
-    # …а остальные три замолчали, потому что у них всё работает.
-    assert sysrules.pending_of(sysrules.SR2) is None
-    assert sysrules.pending_of(sysrules.SR3) is None
+    # У SR-2 и SR-3 своё — сигнал доверенному лицу (шаг 13). ТЗ 6.5 его им
+    # даёт, механика его не делает, и экран обязан сказать об этом сам.
+    assert sysrules.pending_of(sysrules.SR2) is not None
+    assert sysrules.pending_of(sysrules.SR3) is not None
+    # У SR-4 не готово ничего: он работает целиком.
     assert sysrules.pending_of(sysrules.SR4) is None
 
 
@@ -532,5 +535,125 @@ async def test_preview_of_system_rule_uses_its_own_condition(
     assert out["human_text"] == (
         "Если сделка отмечена как нарушение — придёт алерт в Telegram "
         "и торговля заблокируется до конца торгового дня. "
-        "Снять можно, когда будет заполнен разбор."
+        # «раньше» — потому что предел у такой блокировки граница дня,
+        # а разбор позволяет выйти до неё. Без этого слова «заблокируется
+        # до конца дня» и «снять можно» в одной фразе спорят друг с другом.
+        "Снять раньше можно, когда будет заполнен разбор."
     )
+
+
+async def test_phrase_of_day_long_lock_does_not_promise_a_timer(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Блокировка до конца дня с включённым таймером не обещает досрочный выход.
+
+    У неё `timer_until` не выставляется вовсе, поэтому условие «таймер» не
+    выполнится никогда — блокировка кончится на границе дня. Фраза «снять
+    можно, когда истечёт таймер» обещала бы обратное, и это худший вид
+    вранья: трейдер сидит и ждёт кнопку, которая не загорится.
+    """
+    await register(app_client)
+
+    async def phrase(unlock: dict) -> str:
+        res = await app_client.post(
+            "/api/v1/rules/preview",
+            headers=csrf(app_client),
+            json={
+                "system_code": "SR-1",
+                "conditions": [],
+                "actions": {"alert": False, "lock": {"enabled": True, "minutes": None}},
+                "unlock": unlock,
+            },
+        )
+        assert res.status_code == 200, res.text
+        return res.json()["human_text"]
+
+    with_timer = await phrase({"timer": True, "review": True, "buddy": False})
+    assert "истечёт таймер" not in with_timer
+    assert "Снять раньше нельзя" in with_timer
+    # Разбор при этом никуда не девается: он требуется, просто не ускоряет.
+    assert "Разбор всё равно нужен" in with_timer
+
+    # Без таймера снятие по разбору возможно — и сказано, что оно досрочное.
+    without_timer = await phrase({"timer": False, "review": True, "buddy": False})
+    assert "Снять раньше можно, когда будет заполнен разбор." in without_timer
+
+    # У блокировки с заданной длительностью таймер остаётся обычным условием.
+    res = await app_client.post(
+        "/api/v1/rules/preview",
+        headers=csrf(app_client),
+        json={
+            "system_code": "SR-1",
+            "conditions": [],
+            "actions": {"alert": False, "lock": {"enabled": True, "minutes": 30}},
+            "unlock": {"timer": True, "review": True, "buddy": False},
+        },
+    )
+    assert "Снять можно, когда истечёт таймер и будет заполнен разбор." in (
+        res.json()["human_text"]
+    )
+
+
+async def test_every_system_rule_can_be_saved(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Каждый системный триггер должен быть сохраняем как есть.
+
+    SR-2 и SR-3 лежали в базе с `actions.buddy = true`, которого собственная
+    валидация не пропускает: подтверждённого контакта нет до шага 13. Правило
+    в таком виде невозможно сохранить вообще — кнопка «Сохранить» серая, что
+    бы трейдер ни переключил. Проверяется на предпросмотре, потому что именно
+    он решает, доступна ли кнопка.
+    """
+    await register(app_client)
+    out = await rules(app_client)
+
+    for rule in (r for r in out["rules"] if r["kind"] == "system"):
+        res = await app_client.post(
+            "/api/v1/rules/preview",
+            headers=csrf(app_client),
+            json={
+                "system_code": rule["system_code"],
+                "conditions": [],
+                "actions": rule["actions"],
+                "unlock": rule["unlock"],
+            },
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["valid"] is True, (rule["system_code"], body["problem"])
+
+
+async def test_system_rule_declares_only_what_it_does(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Объявление триггера не обещает того, чего обработчик не делает.
+
+    SR-2 срабатывает, когда блокировка уже идёт, а второй активной быть не
+    может — в схеме стоит `one_active_lock`. SR-3 по ТЗ 5.2 и 6.5 блокировку
+    не ставит вовсе. Оба раньше объявляли `lock.enabled = true`, и карточка
+    обещала блокировку, которой неоткуда взяться.
+    """
+    await register(app_client)
+    by_code = {r["system_code"]: r for r in (await rules(app_client))["rules"]}
+
+    for code in ("SR-2", "SR-3", "SR-4"):
+        rule = by_code[code]
+        assert rule["actions"]["lock"]["enabled"] is False, code
+        # Условия снятия без блокировки ничего не значат: снимать нечего.
+        assert not any(rule["unlock"].values()), code
+        assert "заблокируется" not in rule["human_text"], code
+        assert "Снять" not in rule["human_text"], code
+
+    # У SR-1 блокировка есть, и она названа.
+    assert by_code["SR-1"]["actions"]["lock"]["enabled"] is True
+    assert "заблокируется до конца торгового дня" in by_code["SR-1"]["human_text"]
+
+    # Сигнал доверенному лицу выключен у всех: контакта нет до шага 13.
+    assert all(not r["actions"]["buddy"] for r in by_code.values())
+    assert all("уйдёт сигнал" not in r["human_text"] for r in by_code.values())
+
+    # Сгоревший стрик — последствие, а не действие: тумблера у него нет,
+    # но во фразе он назван, иначе SR-2 и SR-3 выглядят безобидно.
+    assert "стрик за этот день сгорит" in by_code["SR-2"]["human_text"]
+    assert "стрик за этот день сгорит" in by_code["SR-3"]["human_text"]

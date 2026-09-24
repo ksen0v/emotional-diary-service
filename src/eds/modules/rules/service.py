@@ -30,7 +30,7 @@ FIRED_WINDOW_DAYS = 30
 
 
 async def ensure_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
-    """Досоздать SR-1…SR-4, если их ещё нет.
+    """Досоздать SR-1…SR-4, если их ещё нет, и починить те, что уже есть.
 
     По требованию, а не при регистрации: так правила появляются и у тех, кто
     зарегистрировался до этого шага, и не нужна миграция данных, которая
@@ -45,6 +45,70 @@ async def ensure_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
             actions=dict(rule.actions),
             unlock=dict(rule.unlock),
         )
+    await _repair_system_rules(s, user_id)
+
+
+async def _repair_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
+    """Привести уже созданные системные правила к тому, что сервис исполняет.
+
+    Нужно потому, что определение триггера живёт в коде и меняется вместе
+    с механикой, а запись в базе создаётся один раз. Разойдясь, они дают
+    худший вид поломки: экран обещает то, чего обработчик не делает.
+
+    Трогается только то, что трейдер изменить не мог:
+
+    - **нередактируемые поля** — их список объявлен в `editable`, и всё
+      остальное принадлежит коду;
+    - **сигнал доверенному лицу**, пока подтверждённого контакта нет. Это не
+      «тихая отмена настройки»: включить его было нельзя, валидация не
+      пропускала, — зато правило с ним лежало в базе в виде, который эта же
+      валидация считает недопустимым, и «Сохранить» не загоралось никогда.
+
+    Настроенное трейдером в разрешённых полях остаётся как есть.
+    """
+    rows = {row.system_code: row for row in await repo.live(s, user_id)}
+    for rule in sysrules.SYSTEM_RULES:
+        row = rows.get(rule.code)
+        if row is None:
+            continue
+
+        editable = set(rule.editable)
+        actions = _merge(dict(rule.actions), dict(row.actions or {}), editable, "actions")
+        unlock = (
+            {key: bool((row.unlock or {}).get(key)) for key in dic.UNLOCK_KEYS}
+            if "unlock" in editable
+            else dict(rule.unlock)
+        )
+        if not sysrules.BUDDY_ACTIVE:
+            actions["buddy"] = False
+            unlock["buddy"] = False
+        # Условия снятия без блокировки ничего не значат: снимать нечего.
+        if not (actions.get("lock") or {}).get("enabled"):
+            unlock = dict.fromkeys(dic.UNLOCK_KEYS, False)
+
+        if actions == row.actions and unlock == row.unlock and row.name == rule.name:
+            continue
+        row.actions = actions
+        row.unlock = unlock
+        row.name = rule.name
+        # Версию не поднимаем: это не правка правила трейдером, а приведение
+        # записи к коду. Инциденты хранят текст на момент срабатывания и
+        # от этого не меняются.
+        await repo.save(s, row, bump_version=False)
+
+
+def _merge(
+    default: dict[str, Any], current: dict[str, Any], editable: set[str], prefix: str
+) -> dict[str, Any]:
+    """Значения из кода, поверх них — то, что трейдеру разрешено менять."""
+    out = dict(default)
+    for key, value in default.items():
+        path = f"{prefix}.{key}"
+        if isinstance(value, dict):
+            out[key] = _merge(value, current.get(key) or {}, editable, path)
+        elif path in editable and key in current:
+            out[key] = current[key]
+    return out
 
 
 def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
@@ -52,9 +116,10 @@ def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
     is_system = row.kind == "system"
     definition = sysrules.BY_CODE.get(row.system_code or "")
 
+    consequence = definition.consequence if definition is not None else ""
     if is_system and definition is not None:
         if_text = definition.if_text(row.actions)
-        summary = definition.summary
+        summary = definition.summary(row.actions)
     else:
         if_text = "за торговый день " + human.conditions_phrase(
             list((row.conditions or {}).get("items", []))
@@ -74,7 +139,7 @@ def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
         "actions": row.actions,
         "unlock": row.unlock,
         "if_text": if_text,
-        "human_text": human.sentence(if_text, row.actions, row.unlock),
+        "human_text": human.sentence(if_text, row.actions, row.unlock, consequence),
         "summary": summary,
         "fired_last_30d": fired_last_30d,
         "version": row.version,
@@ -294,9 +359,10 @@ def preview(
         checked_actions = _loose_actions(actions)
         checked_unlock = {key: bool(unlock.get(key)) for key in dic.UNLOCK_KEYS}
 
+    consequence = definition.consequence if definition is not None else ""
     if definition is not None:
         if_text = definition.if_text(checked_actions)
-        summary = definition.summary
+        summary = definition.summary(checked_actions)
     else:
         if_text = "за торговый день " + human.conditions_phrase(
             list(checked_conditions.get("items", []))
@@ -305,7 +371,9 @@ def preview(
 
     return {
         "if_text": if_text,
-        "human_text": human.sentence(if_text, checked_actions, checked_unlock),
+        "human_text": human.sentence(
+            if_text, checked_actions, checked_unlock, consequence
+        ),
         "summary": summary,
         "valid": problem is None,
         "problem": problem,
@@ -337,6 +405,15 @@ def metrics_catalog(
     catalog["buddy_available"] = HAS_CONFIRMED_CONTACT
     catalog["buddy_note"] = (
         "Доверенное лицо появится на шаге 13: нужен Telegram-бот и двойное согласие."
+    )
+    # Канал алерта. Фраза правила по-прежнему говорит «придёт алерт в Telegram»
+    # — она описывает само правило, а не готовность канала, и уйдёт в инцидент
+    # как текст на момент срабатывания. А вот экран обязан сказать, куда алерт
+    # уходит сегодня: иначе трейдер будет ждать сообщение в Telegram, которого
+    # до шага 13 не будет.
+    catalog["alert_note"] = (
+        "Telegram появится на шаге 13. До тех пор алерт пишется в журнал "
+        "сервиса, а блокировку видно на экране."
     )
     return catalog
 

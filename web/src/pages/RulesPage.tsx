@@ -379,6 +379,16 @@ function Builder({
   const empty = !draft.alert && !draft.lockOn && !draft.buddy
   const nameEmpty = draft.name.trim().length === 0
   const canSave = Boolean(preview?.valid) && !nameEmpty
+  // Что у системного триггера можно изменить прямо сейчас. Список
+  // разрешённых полей — не то же самое, что доступных: единственный параметр
+  // SR-2 и SR-3 это сигнал доверенному лицу, а его нельзя включить до шага 13.
+  // Без этой строки трейдер щёлкает по заблокированным тумблерам и не
+  // понимает, почему ничего не меняется.
+  const nothingToTune =
+    isSystem &&
+    (draft.editable ?? []).every(
+      (field) => field === 'actions.buddy' && !dict.buddy_available,
+    )
 
   return (
     <div
@@ -484,6 +494,7 @@ function Builder({
           label="Алерт в Telegram"
           on={draft.alert}
           disabled={!can(draft, 'actions.alert')}
+          note={draft.alert ? dict.alert_note : undefined}
           onClick={() => patch({ alert: !draft.alert })}
         />
 
@@ -621,6 +632,13 @@ function Builder({
         </div>
       </div>
 
+      {nothingToTune && (
+        <div className="hint">
+          Настраивать здесь пока нечего: единственный параметр этого триггера —
+          сигнал доверенному лицу, а он появится на шаге 13. Условие и
+          последствия заданы в сервисе и не отключаются (ТЗ 6.5).
+        </div>
+      )}
       {problem && !empty && (
         <div className="err">{problem.message}</div>
       )}

@@ -144,6 +144,7 @@ class MetricsOut(BaseModel):
     unlock_conditions: list[dict[str, Any]]
     buddy_available: bool
     buddy_note: str
+    alert_note: str
 
 
 def _conditions(items: list[ConditionIn]) -> list[dict[str, Any]]:
