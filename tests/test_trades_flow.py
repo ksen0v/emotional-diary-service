@@ -287,13 +287,82 @@ async def test_own_marking_works_without_tags(app_client: httpx.AsyncClient) -> 
     body = res.json()
     assert body["trade"]["marking"] == "violation"
     assert body["trade"]["marked_by"] == "user"
-    assert body["effects"] == {"changed": True, "marking_before": "unreviewed"}
+    assert body["effects"]["changed"] is True
+    assert body["effects"]["marking_before"] == "unreviewed"
     # метрики приходят тем же ответом: разметка их меняет немедленно
     assert body["metrics"]["violations"]["count"] == 1
     assert body["metrics"]["coverage_pct"] == "100.00"
 
 
-async def test_own_marking_can_be_changed_back(app_client: httpx.AsyncClient) -> None:
+async def test_own_marking_answers_with_its_own_consequences(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Отметка мгновенно поднимает SR-1, и ответ на неё это показывает.
+
+    Контракт (Архитектура ч.2 §3.4) требует последствия в ответе на сам запрос,
+    и это не удобство: живого обновления экрана ещё нет, поэтому фронт узнаёт
+    о блокировке только отсюда. Без этого трейдер поставит отметку и будет
+    несколько секунд смотреть на обычный экран, пока сервис уже решил,
+    что торговать нельзя.
+    """
+    await setup_user(app_client)
+    await tagless(app_client)
+    await push(app_client)
+    await sync(app_client)
+    trade_id = (await feed(app_client))["items"][0]["id"]
+
+    res = await app_client.put(
+        f"/api/v1/trades/{trade_id}/marking",
+        headers=csrf(app_client),
+        json={"marking": "violation"},
+    )
+    assert res.status_code == 200, res.text
+    effects = res.json()["effects"]
+
+    assert effects["incident_opened"] is not None
+    assert effects["incident_opened"]["code"] == "violation"
+    # SR-1 держит блокировку до конца торгового дня сделки (ТЗ 4.4).
+    assert effects["lock_started"] is not None
+    assert effects["engine"]["system_fired"] >= 1
+    assert effects["recomputed_days"]
+
+
+async def test_own_marking_cannot_be_taken_back_after_an_incident(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Снять отметку, из которой родился инцидент, нельзя (ТЗ 9.2).
+
+    Инцидент неудаляем. Если позволить снять отметку, он останется в истории
+    без причины: сделка окажется чистой, а инцидент про неё — записан.
+    """
+    await setup_user(app_client)
+    await tagless(app_client)
+    await push(app_client)
+    await sync(app_client)
+    trade_id = (await feed(app_client))["items"][0]["id"]
+
+    await app_client.put(
+        f"/api/v1/trades/{trade_id}/marking",
+        headers=csrf(app_client),
+        json={"marking": "violation"},
+    )
+    back = await app_client.put(
+        f"/api/v1/trades/{trade_id}/marking",
+        headers=csrf(app_client),
+        json={"marking": "clean"},
+    )
+    assert back.status_code == 409
+    assert back.json()["error"]["code"] == "already_marked"
+
+
+async def test_own_marking_can_be_changed_while_nothing_happened(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Пока из отметки ничего не выросло, её можно менять как угодно.
+
+    Запрет касается только отметки, породившей инцидент: ошибиться, поставив
+    «по системе» не той сделке, трейдер имеет право.
+    """
     await setup_user(app_client)
     await tagless(app_client)
     await push(app_client)
@@ -309,11 +378,13 @@ async def test_own_marking_can_be_changed_back(app_client: httpx.AsyncClient) ->
         assert res.status_code == 200, res.text
         return res.json()
 
-    await mark("violation")
-    back = await mark("clean")
-    assert back["trade"]["marking"] == "clean"
-    assert back["metrics"]["violations"]["count"] == 0
-    assert back["metrics"]["discipline_pct"] == "100.00"
+    first = await mark("clean")
+    assert first["trade"]["marking"] == "clean"
+    assert first["effects"]["incident_opened"] is None
+    assert first["metrics"]["discipline_pct"] == "100.00"
+
+    again = await mark("clean")
+    assert again["effects"]["changed"] is False
 
 
 async def test_marking_survives_sync(app_client: httpx.AsyncClient) -> None:
@@ -427,3 +498,45 @@ async def test_bad_marking_value_rejected(app_client: httpx.AsyncClient) -> None
         json={"marking": "unreviewed"},
     )
     assert res.status_code == 400
+
+
+async def test_own_marking_of_a_past_day_goes_the_retro_way(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Отметка на сделке прошлого дня идёт ретропроверкой, а не блокировкой.
+
+    Окно того дня закрыто, и включать блокировку задним числом нельзя (ТЗ 4.4).
+    Путь у своей разметки тот же самый, что у позднего тега: ветку выбирает
+    SR-1 по одному условию — открыто окно дня сделки или уже закрылось.
+    Это важно проверить именно для своей разметки: при источнике без тегов
+    она и есть единственный способ отметить нарушение.
+    """
+    await setup_user(app_client)
+    await tagless(app_client)
+    # Две сделки вчера: размеченная и открытая после неё. Граница дня
+    # отодвинута на шесть часов вперёд, поэтому обе заведомо лежат в одном
+    # прошлом дне.
+    await push(app_client, minutes_ago=26 * 60)
+    await push(app_client, minutes_ago=25 * 60, symbol="ETHUSDT")
+    await sync(app_client)
+
+    items = (await feed(app_client, period="month"))["items"]
+    oldest = min(items, key=lambda i: i["open_time"])
+
+    res = await app_client.put(
+        f"/api/v1/trades/{oldest['id']}/marking",
+        headers=csrf(app_client),
+        json={"marking": "violation"},
+    )
+    assert res.status_code == 200, res.text
+    effects = res.json()["effects"]
+
+    # Инцидент записан в тот прошлый день, а не в сегодняшний.
+    assert effects["incident_opened"] is not None
+    assert effects["incident_opened"]["day"] == oldest["trading_day"]
+    assert effects["incident_opened"]["code"] == "retro_tag"
+    # После размеченной сделки в тот день торговали — окно нарушено.
+    assert effects["incident_opened"]["outcome"] == "breached"
+    # Блокировки нет ни в одной ветке: окно того дня давно истекло.
+    assert effects["lock_started"] is None
+    assert effects["engine"]["retro_checked"] == 1

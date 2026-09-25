@@ -43,18 +43,35 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
 
   const height = 130
   const pad = 8
-  const values = points.map((p) => Number(p.equity_pct))
+  const rawValues = points.map((p) => Number(p.equity_pct))
+
+  const last = points[points.length - 1]
+
+  // Открытая позиция — хвост кривой за последней закрытой сделкой. Рисуется
+  // пунктиром, потому что это не то же самое, что закрытые точки: значение
+  // ещё меняется, и между нашими замерами оно могло уходить дальше. Сплошной
+  // линией это обещало бы знание, которого у нас нет.
+  const openPct =
+    curve.unrealized.available && curve.unrealized.pct !== null
+      ? Number(curve.unrealized.pct)
+      : null
+  const tailValue = openPct === null ? null : Number(last.equity_pct) + openPct
+
+  const values = tailValue === null ? rawValues : [...rawValues, tailValue]
   const maxY = Math.max(0, ...values)
   const minY = Math.min(0, ...values)
   const span = maxY - minY || 1
 
   const x = (i: number) =>
-    points.length === 1 ? width / 2 : pad + (i * (width - pad * 2)) / (points.length - 1)
+    points.length === 1 && tailValue === null
+      ? width / 2
+      : pad + (i * (width - pad * 2)) / Math.max(1, points.length - 1 + (tailValue === null ? 0 : 1))
   const y = (v: number) => pad + ((maxY - v) * (height - pad * 2)) / span
 
   const line = points.map((p, i) => `${x(i)},${y(Number(p.equity_pct))}`).join(' ')
   const zeroY = y(0)
-  const last = points[points.length - 1]
+  const tailFrom = x(points.length - 1)
+  const tailTo = x(points.length)
 
   return (
     <Frame>
@@ -67,7 +84,13 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
           пик {pct(curve.close.peak_pct)} · просадка {pctPlain(curve.close.max_drawdown_pct)}
         </span>
         <div style={{ flexGrow: 1 }} />
-        {!curve.unrealized.available && (
+        {curve.unrealized.available ? (
+          curve.unrealized.pct !== null && (
+            <span className="hint">
+              открытая позиция {pct(curve.unrealized.pct)}
+            </span>
+          )
+        ) : (
           <span className="hint" title="Источник не отдаёт открытые позиции">
             без открытых позиций
           </span>
@@ -90,6 +113,27 @@ export function DayCurve({ curve, bare }: { curve: Curve; bare?: boolean }) {
             stroke={Number(last.equity_pct) < 0 ? 'var(--bad)' : 'var(--ok)'}
             strokeWidth={1.5}
           />
+          {tailValue !== null && (
+            <>
+              <line
+                x1={tailFrom}
+                y1={y(Number(last.equity_pct))}
+                x2={tailTo}
+                y2={y(tailValue)}
+                stroke={tailValue < Number(last.equity_pct) ? 'var(--bad)' : 'var(--ok)'}
+                strokeWidth={1.5}
+                strokeDasharray="4 4"
+              />
+              <circle
+                cx={tailTo}
+                cy={y(tailValue)}
+                r={3}
+                fill="none"
+                stroke={tailValue < Number(last.equity_pct) ? 'var(--bad)' : 'var(--ok)'}
+                strokeWidth={1.5}
+              />
+            </>
+          )}
           {points.map((p, i) => (
             <circle
               key={p.trade_id}

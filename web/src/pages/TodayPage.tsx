@@ -547,6 +547,10 @@ function DayScreen({ today }: { today: Today }) {
 function Tiles({ today, empty }: { today: Today; empty?: boolean }) {
   const c = today.counters
   const dash = (value: string) => (empty ? '—' : value)
+  // `null` значит «источник не отдаёт открытые позиции», а не «их нет».
+  // Разница видна на экране: в первом случае строки нет вовсе, во втором
+  // стоял бы ноль (Архитектура ч.2 §3.5).
+  const full = c.unrealized_pct !== null && c.drawdown_full_pct !== null
   return (
     <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 12 }}>
       <Tile
@@ -555,12 +559,29 @@ function Tiles({ today, empty }: { today: Today; empty?: boolean }) {
         sub={dash(pct(c.equity_pct))}
         color={empty ? undefined : pnlColor(c.profit_usd)}
       />
+      {/* Просадка одна, а не две под похожими именами. Решение Влада от 25.09:
+          при источнике с открытыми позициями плитка показывает просадку
+          с учётом нереализованного, и подпись называет это прямо. Два разных
+          числа под одним именем на одном экране — худшее из возможного, и это
+          тот же урок, что с коэффициентом дисциплины на шаге 10. */}
       <Tile
         label="Просадка от пика"
-        value={dash(`${Number(c.drawdown_pct).toFixed(2)}%`)}
-        sub={dash(`пик ${pct(c.peak_pct)}`)}
-        color={!empty && Number(c.drawdown_pct) > 0 ? 'var(--warn)' : undefined}
+        value={dash(`${Number(full ? c.drawdown_full_pct : c.drawdown_pct).toFixed(2)}%`)}
+        sub={dash(full ? 'с открытой позицией' : `пик ${pct(c.peak_pct)}`)}
+        color={
+          !empty && Number(full ? c.drawdown_full_pct : c.drawdown_pct) > 0
+            ? 'var(--warn)'
+            : undefined
+        }
       />
+      {full && (
+        <Tile
+          label="Открытая позиция"
+          value={pct(c.unrealized_pct ?? "0")}
+          sub="нереализованный"
+          color={Number(c.unrealized_pct ?? 0) < 0 ? 'var(--bad)' : 'var(--ok)'}
+        />
+      )}
       <Tile
         label="Сделок"
         value={String(c.all_trades)}

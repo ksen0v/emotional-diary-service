@@ -2,7 +2,7 @@
 
 На шаге 0 здесь же живёт демонстрационный консьюмер шины: он ничего не делает,
 кроме сдвига своего курсора, и нужен, чтобы на странице было видно, что событие
-дошло от продюсера до консьюмера. На шаге 4 консьюмеры переедут в процесс worker.
+дошло от продюсера до консьюмера. Позже консьюмеры переедут в процесс worker.
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.app import consumers
 from eds.app.api import router as sync_router
+from eds.app.scheduler import Scheduler
 from eds.contracts import events as ev
 from eds.modules.daybook.api import router as daybook_router
 from eds.modules.identity.api import router as identity_router
@@ -54,9 +55,18 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(c.run(), name=f"consumer-{c.name}") for c in running
     ]
     app.state.consumers = running
+
+    # Поток к бирже и задачи по времени живут здесь же, отдельными корутинами.
+    # Архитектура ч.1 §2 отводит им процессы `stream` и `worker`; шов для этого
+    # готов — каждая задача самостоятельна и ничего не знает про FastAPI, —
+    # но пока процесс один, и команда запуска у Влада не меняется.
+    scheduler = Scheduler()
+    scheduler.start()
+    app.state.scheduler = scheduler
     try:
         yield
     finally:
+        await scheduler.stop()
         for c in running:
             c.stop()
         for task in tasks:
@@ -92,6 +102,9 @@ async def health() -> dict:
         "secret_key_set": settings().secret_key_set,
         "db": database,
         "bus": shina | {"delivered_in_process": _delivered.get("demo", 0)},
+        "background": (
+            app.state.scheduler.state() if hasattr(app.state, "scheduler") else None
+        ),
         "ok": bool(database["connected"] and database["revision"]),
     }
 

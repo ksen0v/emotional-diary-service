@@ -20,7 +20,9 @@ from eds.contracts.source import (
     IncomingAccount,
     IncomingTag,
     IncomingTrade,
+    SourceBalance,
     SourceCapabilities,
+    SourcePosition,
 )
 from eds.modules.source.models import FakeFeedItem
 
@@ -33,17 +35,29 @@ class FakeSource:
 
     provider = "fake"
 
-    def __init__(self, session: AsyncSession, connection_id: uuid.UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        connection_id: uuid.UUID,
+        declared: dict | None = None,
+    ):
         self._s = session
         self._connection_id = connection_id
+        self._declared = declared or {}
 
     def capabilities(self) -> SourceCapabilities:
-        # Фейк изображает TMM: готовые сделки и теги, без позиций и баланса.
+        """По умолчанию фейк изображает TMM: готовые сделки и теги.
+
+        Обе возможности переключаются, чтобы он умел изображать и Binance —
+        источник без тегов и с открытыми позициями. Это не игрушка: своя
+        разметка и честная просадка иначе проверялись бы только на живом ключе,
+        то есть редко и руками.
+        """
         return SourceCapabilities(
             provides_trades=True,
-            provides_tags=True,
-            provides_positions=False,
-            provides_balance=False,
+            provides_tags=bool(self._declared.get("provides_tags", True)),
+            provides_positions=bool(self._declared.get("provides_positions", False)),
+            provides_balance=bool(self._declared.get("provides_positions", False)),
             needs_aggregation=False,
             history_depth="full",
         )
@@ -90,6 +104,55 @@ class FakeSource:
             query = query.where(FakeFeedItem.close_time <= until)
         rows = await self._s.execute(query.order_by(FakeFeedItem.close_time))
         return [_from_payload(row.payload) for row in rows.scalars()]
+
+
+    async def fetch_positions(self) -> list[SourcePosition]:
+        """Открытые позиции, поданные через dev-панель.
+
+        Лежат там же, где настоящие, — в `source.positions`. Отдельного
+        хранилища у фейка нет сознательно: иначе он проверял бы не тот путь,
+        по которому пойдут настоящие данные.
+        """
+        from eds.modules.source.models import Position as PositionRow
+
+        if not self.capabilities().provides_positions:
+            return []
+        res = await self._s.execute(
+            select(PositionRow).where(PositionRow.connection_id == self._connection_id)
+        )
+        return [
+            SourcePosition(
+                symbol=row.symbol,
+                position_side=row.position_side,
+                qty=row.qty,
+                entry_price=row.entry_price,
+                mark_price=row.mark_price,
+                unrealized_usd=row.unrealized_usd,
+                liquidation=row.liquidation,
+            )
+            for row in res.scalars()
+        ]
+
+    async def fetch_balance(self) -> SourceBalance | None:
+        """Баланс из последнего снимка. None — источник его не отдаёт."""
+        from eds.modules.source.models import BalanceSnapshot
+
+        if not self.capabilities().provides_balance:
+            return None
+        res = await self._s.execute(
+            select(BalanceSnapshot)
+            .where(BalanceSnapshot.connection_id == self._connection_id)
+            .order_by(BalanceSnapshot.taken_at.desc())
+            .limit(1)
+        )
+        row = res.scalar_one_or_none()
+        if row is None:
+            return None
+        return SourceBalance(
+            wallet_usdt=row.wallet_usdt,
+            equity_usdt=row.equity_usdt,
+            taken_at=row.taken_at,
+        )
 
 
 def _from_payload(payload: dict) -> IncomingTrade:

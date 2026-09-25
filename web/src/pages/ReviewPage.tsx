@@ -212,7 +212,7 @@ export function ReviewPage() {
               <button className="cta" onClick={() => send.mutate()} disabled={send.isPending}>
                 {send.isPending ? 'Сохраняю…' : 'Сохранить и закрыть день'}
               </button>
-              <span className="mono hint">Стрик появится на шаге 7</span>
+              <span className="hint">Разбор — одно из условий зачёта дня в стрик (ТЗ 7.1).</span>
             </div>
             {error && (
               <div className="err" style={{ marginTop: 14 }}>

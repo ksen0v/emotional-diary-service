@@ -70,7 +70,7 @@
       <button id="send">Отправить тестовое событие</button>
       <span class="note" id="sent" style="margin:0"></span>
     </div>
-    <div class="note">Проверка шага 0: нажми кнопку — счётчик в outbox вырастет, а через секунду
+    <div class="note">Проверка шины: нажми кнопку — счётчик в outbox вырастет, а через секунду
       за ним подтянется курсор консьюмера. Значит событие дошло от продюсера к консьюмеру.</div>
     <div class="err" id="buserr"></div>
   </div>
@@ -105,7 +105,7 @@ async function refresh() {
   $('step').textContent = data.step.number + ' — ' + data.step.name;
   $('env').textContent = data.env;
   $('time').textContent = data.server_time;
-  mark($('secret'), data.secret_key_set, data.secret_key_set ? 'задан' : 'не задан (нужен с шага 4)');
+  mark($('secret'), data.secret_key_set, data.secret_key_set ? 'задан' : 'не задан (нужен для подключения источника)');
   if (!data.secret_key_set) $('secret').className = 'v warn';
 
   mark($('dbconn'), data.db.connected, data.db.connected ? 'есть' : 'нет');

@@ -13,7 +13,9 @@ from eds.contracts.source import (
     IncomingAccount,
     IncomingTag,
     IncomingTrade,
+    SourceBalance,
     SourceCapabilities,
+    SourcePosition,
 )
 from eds.modules.source.adapters.tmm import mapping
 from eds.modules.source.adapters.tmm.rest import (
@@ -306,3 +308,16 @@ class TmmSource:
                 continue
             out.append(full[0] if full else row)
         return out
+
+    async def fetch_positions(self) -> list[SourcePosition]:
+        """Открытых позиций у этого источника нет — и это ответ, а не заглушка.
+
+        Интерфейс спрашивает возможности, а не имя провайдера, поэтому метод
+        обязан быть у всех источников: ветвление по провайдеру на стороне
+        вызывающего это ровно то, чего возможности и избегают.
+        """
+        return []
+
+    async def fetch_balance(self) -> SourceBalance | None:
+        """Баланса этот источник не отдаёт. None, а не ноль: ноль — пустой счёт."""
+        return None

@@ -21,7 +21,7 @@ const PRESETS = [
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 
-export function DevPanel() {
+export function DevPanel({ positions }: { positions?: boolean }) {
   const qc = useQueryClient()
   const [report, setReport] = useState<SyncReport | null>(null)
   const [error, setError] = useState('')
@@ -51,6 +51,23 @@ export function DevPanel() {
       setReport(null)
       setError(err instanceof ApiError ? err.message : 'Не получилось.')
     },
+  })
+
+  // Открытая позиция кладётся туда же, где лежат настоящие, и оттуда её
+  // забирает обычное обновление позиций. Нужна, чтобы просадку с учётом
+  // нереализованного можно было увидеть, не сидя в минусе по-настоящему.
+  const position = useMutation({
+    mutationFn: async (unrealized: string) => {
+      await api.post('/source/dev/position', { unrealized_usd: unrealized })
+      return api.post<{ positions: number }>('/positions/refresh')
+    },
+    onSuccess: () => {
+      setError('')
+      qc.invalidateQueries({ queryKey: ['today'] })
+      qc.invalidateQueries({ queryKey: ['curve'] })
+    },
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : 'Позиция не подалась.'),
   })
 
   const sync = useMutation({
@@ -95,6 +112,25 @@ export function DevPanel() {
         ))}
       </div>
 
+      {positions && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+          <button
+            onClick={() => position.mutate('-150')}
+            disabled={position.isPending}
+            style={{ fontSize: 12, padding: '7px 12px' }}
+          >
+            Открытая позиция −$150
+          </button>
+          <button
+            onClick={() => position.mutate('-480')}
+            disabled={position.isPending}
+            style={{ fontSize: 12, padding: '7px 12px' }}
+          >
+            Открытая позиция −$480
+          </button>
+        </div>
+      )}
+
       {report && (
         <div className="hint" style={{ marginTop: 12 }}>
           Сверка: получено {report.received}, принято {report.inserted}, переразмечено{' '}
@@ -110,7 +146,7 @@ export function DevPanel() {
       )}
       <div className="hint" style={{ marginTop: 10 }}>
         Кнопка кладёт сделку в источник, а сверка забирает её оттуда — тот же путь,
-        которым пойдут настоящие сделки из TMM на шаге 4.
+        которым идут настоящие сделки из подключённого источника.
       </div>
     </div>
   )

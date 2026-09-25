@@ -21,8 +21,11 @@ from eds.modules.daybook import service as daybook
 from eds.modules.incidents import repo as incidents_repo
 from eds.modules.streaks import repo as streaks_repo
 from eds.modules.streaks import service as streaks_service
+from eds.modules.trades import api as trades_api
 from eds.modules.trades import repo as trades_repo
+from eds.modules.trades import service as trades_service
 from eds.platform import auth, db
+from eds.platform.errors import AppError
 
 router = APIRouter(prefix="/api/v1", tags=["sync"])
 
@@ -54,7 +57,7 @@ async def sync(
 ) -> dict:
     """Забрать сделки у активного источника и принять их.
 
-    На шаге 4 этот же путь будет вызываться по расписанию и после обрыва потока;
+    Этот же путь будет вызываться по расписанию и после обрыва потока;
     кнопка в интерфейсе остаётся как способ проверить руками.
     """
     try:
@@ -297,3 +300,139 @@ async def freeze_day(
     )
     await s.commit()
     return await streaks_service.state_out(s, user.user_id, day)
+
+
+@router.post("/positions/refresh")
+async def refresh_positions(
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Перечитать открытые позиции и досчитать просадку с учётом нереализованного.
+
+    Тот же путь вызывается по расписанию раз в минуту при открытой сессии;
+    кнопка остаётся как способ проверить руками — ровно как у сверки.
+    """
+    out = await pipeline.refresh_positions(s, user.user_id)
+    await s.commit()
+    return out
+
+
+# --- своя разметка нарушений ---
+
+
+class MarkingIn(BaseModel):
+    marking: str = Field(pattern="^(violation|clean)$")
+
+
+@router.put("/trades/{trade_id}/marking")
+async def mark_trade(
+    trade_id: uuid.UUID,
+    body: MarkingIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Отметить сделку «не по системе» — когда источник не отдаёт теги.
+
+    Стоит в оркестрации, потому что задевает четыре модуля: отметка меняет
+    сделку, поднимает SR-1, включает блокировку и пересчитывает стрик.
+
+    **Движок вызывается синхронно, в этом же запросе, и ответ несёт
+    последствия.** Это требование контракта (Архитектура ч.2 §3.4), и оно
+    не про удобство: разметка может мгновенно включить блокировку, и если
+    фронт узнает о ней из фонового события, трейдер успеет увидеть обычный
+    экран вместо экрана блокировки. Живого обновления у нас ещё нет, так что
+    ответ на собственный запрос — единственный способ не соврать.
+    """
+    provides_tags = await auth.source_provides_tags(s, user.user_id)
+    trade = await trades_repo.by_id(s, user.user_id, trade_id)
+    if trade is None:
+        raise AppError("not_found", "Сделка не найдена.", 404)
+
+    # Историю переписать нельзя (ТЗ 9.2). Снять отметку, из которой уже
+    # родился инцидент, — это и есть попытка переписать: инцидент останется,
+    # а сделка, его породившая, окажется чистой, и объяснить инцидент будет
+    # нечем. Поставить более строгую отметку можно всегда.
+    if body.marking == "clean" and trade.marking == "violation":
+        born = await _incident_of_trade(s, user.user_id, trade)
+        if born is not None:
+            raise AppError(
+                "already_marked",
+                "Из этой отметки уже записан инцидент, и снять её нельзя: "
+                "история не переписывается.",
+                409,
+                {"incident_id": str(born.id), "day": trade.trading_day.isoformat()},
+            )
+
+    before = (await streaks_repo.ensure_state(s, user.user_id)).current
+    updated, effects = await trades_service.mark_by_user(
+        s, user.user_id, trade_id, body.marking, source_provides_tags=provides_tags
+    )
+
+    day = updated.trading_day
+    report = pipeline.engine.EngineReport()
+    if effects.get("changed"):
+        await pipeline.engine.run_day(s, user.user_id, prefs, day, report=report)
+        await app_streaks.refresh(
+            s, user.user_id, prefs, today=today.today_of(prefs), days=[day]
+        )
+
+    state = await streaks_repo.ensure_state(s, user.user_id)
+    lock = await incidents_repo.active_lock(s, user.user_id)
+    born = await _incident_of_trade(s, user.user_id, updated)
+
+    computed, _confidence = await trades_service.marking_metrics(
+        s, user.user_id, trades_service.period_days("month", today.today_of(prefs))
+    )
+    await s.commit()
+
+    tags = await trades_repo.tags_of(s, [updated.id])
+    return {
+        "trade": trades_api.trade_out(updated, tags.get(updated.id, [])).model_dump(
+            mode="json"
+        ),
+        "effects": {
+            "changed": bool(effects.get("changed")),
+            "marking_before": effects.get("marking_before"),
+            "incident_opened": (
+                {
+                    "id": str(born.id),
+                    "code": born.code,
+                    "day": born.day.isoformat(),
+                    "outcome": born.outcome,
+                }
+                if born is not None
+                else None
+            ),
+            "lock_started": (
+                {
+                    "id": str(lock.id),
+                    "window_until": lock.window_until.isoformat(),
+                    "timer_until": (
+                        lock.timer_until.isoformat() if lock.timer_until else None
+                    ),
+                }
+                if lock is not None and lock.state == "active"
+                else None
+            ),
+            "streak": {"current": state.current, "previous": before},
+            "recomputed_days": [day.isoformat()],
+            "engine": report.as_dict(),
+        },
+        "metrics": computed.as_dict(),
+    }
+
+
+async def _incident_of_trade(s: AsyncSession, user_id: uuid.UUID, trade) -> object | None:
+    """Инцидент, родившийся из отметки этой сделки.
+
+    Ищем по дню сделки и её идентификатору в `details`, а не по коду: живая
+    ветка SR-1 пишет `violation`, ретроветка — `retro_tag`, и оба означают
+    «инцидент из этой отметки уже есть».
+    """
+    for row in await incidents_repo.incidents_of_day(s, user_id, trade.trading_day):
+        if str((row.details or {}).get("trade_id")) == str(trade.id):
+            return row
+    return None

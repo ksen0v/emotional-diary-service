@@ -7,11 +7,11 @@
 
 Формулировки взяты из прототипа RuleBuilder.dc.html дословно. Одно отличие:
 в прототипе доверенное лицо названо по имени («Максиму уйдёт сигнал»), у нас
-пока «доверенному лицу» — контактов ещё нет (шаг 13), а склонять произвольное
+пока «доверенному лицу» — контактов ещё нет, а склонять произвольное
 имя в дательный падеж мы не будем.
 """
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from eds.modules.rules.dictionary import BY_KEY, CMP_WORD, CONN_WORD
@@ -33,11 +33,20 @@ def plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def number(value: Any) -> str:
-    """Число так, как его ввёл трейдер: 2, 0.5, 5 — без хвостовых нулей."""
+    """Число так, как его ввёл трейдер: 2, 0.5, 5 — без хвостовых нулей.
+
+    Считанные показатели округляются до двух знаков, как все проценты на
+    границе API (Архитектура ч.2 §1.4). Без этого строка «ближе всего
+    к срабатыванию» показывала «1.794271% из 3%»: просадка с открытой
+    позицией считается делением и хранится с шестью знаками.
+    """
     try:
         dec = Decimal(str(value))
     except (ArithmeticError, ValueError):
         return str(value)
+    if dec == dec.to_integral_value():
+        return str(dec.quantize(Decimal("1")))
+    dec = dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if dec == dec.to_integral_value():
         return str(dec.quantize(Decimal("1")))
     return str(dec.normalize())

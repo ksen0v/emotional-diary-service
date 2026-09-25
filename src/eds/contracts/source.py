@@ -80,8 +80,34 @@ class IncomingTrade:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SourcePosition:
+    """Открытая позиция. Есть только у источника с `provides_positions`."""
+
+    symbol: str
+    position_side: str
+    qty: Decimal
+    entry_price: Decimal
+    mark_price: Decimal | None
+    unrealized_usd: Decimal
+    liquidation: Decimal | None
+
+    @property
+    def is_open(self) -> bool:
+        return self.qty != 0
+
+
+@dataclass(frozen=True)
+class SourceBalance:
+    """Снимок баланса счёта. Есть только у источника с `provides_balance`."""
+
+    wallet_usdt: Decimal
+    equity_usdt: Decimal
+    taken_at: dt.datetime
+
+
 class TradeSource(Protocol):
-    """Порт. Реализации: fake (шаг 2), tmm (шаг 4), binance (шаг 14)."""
+    """Порт. Реализации: fake, tmm, binance."""
 
     provider: str
 
@@ -102,4 +128,21 @@ class TradeSource(Protocol):
         self, since: dt.datetime, until: dt.datetime | None = None
     ) -> list[IncomingTrade]:
         """Сделки, закрытые в окне. Окно никогда не уходит раньше ingest_from."""
+        ...
+
+    async def fetch_positions(self) -> list[SourcePosition]:
+        """Открытые позиции. Источник без них возвращает пустой список.
+
+        Пустой список, а не исключение: спрашивать источник о том, что он
+        объявил в возможностях, — обычный путь, и ветвление по имени провайдера
+        на стороне вызывающего это ровно то, чего возможности и избегают.
+        """
+        ...
+
+    async def fetch_balance(self) -> SourceBalance | None:
+        """Баланс счёта. None — источник его не отдаёт.
+
+        None, а не ноль: ноль означал бы пустой счёт, и проценты от депозита
+        посчитались бы делением на него.
+        """
         ...

@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eds.contracts import events as ev
 from eds.contracts.source import IncomingAccount, IncomingTag
 from eds.modules.source import repo
+from eds.modules.source.adapters.binance.rest import BinanceClient
+from eds.modules.source.adapters.binance.source import MARKET as BINANCE_MARKET
+from eds.modules.source.adapters.binance.source import BinanceSource
 from eds.modules.source.adapters.fake.source import ACCOUNT_EXTERNAL_ID, FakeSource
 from eds.modules.source.adapters.tmm.rest import TmmClient
 from eds.modules.source.adapters.tmm.source import PROBE_DAYS, TmmSource
@@ -23,7 +26,7 @@ async def connect_fake(s: AsyncSession, user_id: uuid.UUID) -> Connection:
     """Подключить фейковый источник.
 
     Существует только для разработки и тестов: настоящие подключения появятся
-    на шаге 4 (TMM) и 14 (Binance). Держать его в общем коде — сознательный выбор:
+    у TMM и у Binance. Держать его в общем коде — сознательный выбор:
     на нём стоят все сценарные тесты, и он должен ломаться вместе с остальным.
     """
     existing = [c for c in await repo.connections_of(s, user_id) if c.provider == "fake"]
@@ -46,7 +49,7 @@ async def connect_fake(s: AsyncSession, user_id: uuid.UUID) -> Connection:
             ingest_from=dt.datetime.now(dt.UTC) - dt.timedelta(days=30),
         )
 
-    source = FakeSource(s, connection.id)
+    source = FakeSource(s, connection.id, connection.capabilities)
     await repo.upsert_accounts(s, user_id, connection.id, await source.fetch_accounts())
 
     # Включаем только если активного источника ещё нет. Раньше фейк включался
@@ -92,12 +95,17 @@ async def activate(
 
 
 async def set_fake_capabilities(
-    s: AsyncSession, user_id: uuid.UUID, *, provides_tags: bool
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    provides_tags: bool | None = None,
+    provides_positions: bool | None = None,
 ) -> Connection:
-    """Заставить фейковый источник изображать источник без тегов.
+    """Заставить фейковый источник изображать другой источник.
 
-    Нужно, чтобы своя разметка проверялась до появления Binance: у него тегов нет,
-    и разметка живёт у нас. Работает только для фейка — настоящему источнику
+    Две возможности, и обе нужны по одной причине: иначе своя разметка
+    и честная просадка проверялись бы только на живом ключе Binance, то есть
+    редко и руками. Работает только для фейка — настоящему источнику
     возможности не переписать, они его свойство, а не настройка.
     """
     connection = await repo.active_connection(s, user_id)
@@ -108,16 +116,80 @@ async def set_fake_capabilities(
             409,
         )
     caps = dict(connection.capabilities)
-    caps["provides_tags"] = provides_tags
+    if provides_tags is not None:
+        caps["provides_tags"] = provides_tags
+    if provides_positions is not None:
+        caps["provides_positions"] = provides_positions
+        # Баланс и позиции ходят парой: проценты от депозита считаются от базы,
+        # и позиция без баланса дала бы нереализованный убыток без знаменателя.
+        caps["provides_balance"] = provides_positions
     connection.capabilities = caps
     await s.flush()
     return connection
 
 
+async def push_fake_position(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    symbol: str,
+    qty: Decimal,
+    entry_price: Decimal,
+    mark_price: Decimal,
+    unrealized_usd: Decimal,
+    wallet_usdt: Decimal,
+) -> dict:
+    """Положить открытую позицию в тестовый источник.
+
+    Кладётся туда же, где лежат настоящие, — в `source.positions`, и оттуда
+    её забирает обычное обновление позиций. Иначе dev-панель проверяла бы
+    не тот путь, по которому пойдут данные биржи.
+    """
+    connection = await repo.active_connection(s, user_id)
+    if connection is None or connection.provider != "fake":
+        raise AppError(
+            "no_fake_source",
+            "Фейковый источник не активен. Подключи его на экране настроек.",
+            409,
+        )
+    if not connection.capabilities.get("provides_positions"):
+        raise AppError(
+            "not_supported_by_source",
+            "Источник объявлен без открытых позиций. Включи их на экране настроек.",
+            409,
+        )
+    await repo.save_balance(
+        s,
+        connection.id,
+        dt.datetime.now(dt.UTC),
+        wallet_usdt,
+        wallet_usdt + unrealized_usd,
+    )
+    await repo.save_positions(
+        s,
+        connection.id,
+        [
+            {
+                "symbol": symbol.upper(),
+                "position_side": "BOTH",
+                "qty": qty,
+                "entry_price": entry_price,
+                "mark_price": mark_price,
+                "unrealized_usd": unrealized_usd,
+                "unrealized_pct": (
+                    unrealized_usd / wallet_usdt * 100 if wallet_usdt else Decimal("0")
+                ),
+                "liquidation": None,
+            }
+        ],
+    )
+    return {"symbol": symbol.upper(), "unrealized_usd": str(unrealized_usd)}
+
+
 async def set_violation_tags(
     s: AsyncSession, user_id: uuid.UUID, tag_ids: list[str]
 ) -> int:
-    """Отметить, какие теги считаются нарушением. Пересчёт разметки — шаг 3."""
+    """Отметить, какие теги считаются нарушением. Пересчёт разметки идёт событием."""
     connection = await repo.active_connection(s, user_id)
     if connection is None:
         raise AppError("no_active_source", "Источник сделок не подключён.", 409)
@@ -224,8 +296,9 @@ def _tag_id(name: str) -> str:
 # --- настоящие источники ---
 
 TMM = "tmm"
-# Провайдеры, которых мы умеем подключать ключом. binance добавится на шаге 14.
-CONNECTABLE = (TMM,)
+BINANCE = "binance"
+# Провайдеры, которых мы умеем подключать ключом.
+CONNECTABLE = (TMM, BINANCE)
 
 
 @dataclass
@@ -246,6 +319,14 @@ class Probe:
     accounts_from_trades: bool
     window_filter_honored: bool | None
     mapping_errors: list[str]
+    # Ниже — только про Binance. Общая форма вместо двух похожих дата-классов:
+    # экран подключения один, и разветвлять его по имени провайдера значило бы
+    # нарушить то же правило, что и в адаптере.
+    permissions: dict | None = None
+    symbols: list[str] | None = None
+    hedge_detected: bool = False
+    commission_assets: list[str] | None = None
+    key_warnings: list[tuple[str, str]] | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -263,6 +344,10 @@ class Probe:
             "accounts_from_trades": self.accounts_from_trades,
             "window_filter_honored": self.window_filter_honored,
             "mapping_errors": self.mapping_errors[:5],
+            "permissions": self.permissions,
+            "symbols": self.symbols,
+            "hedge_detected": self.hedge_detected,
+            "commission_assets": self.commission_assets,
         }
 
 
@@ -312,6 +397,50 @@ def _sample_row(trade) -> dict:
     }
 
 
+def _binance_client(key: str, secret: str) -> BinanceClient:
+    return BinanceClient(key, secret)
+
+
+async def probe_binance(
+    key: str, secret: str
+) -> tuple[Probe, BinanceSource, BinanceClient]:
+    """Проверить ключ Binance и посмотреть, что за ним видно.
+
+    Первым делом — права ключа, и только потом всё остальное. Порядок
+    не формальность: ключ с правом вывода средств мы не подключаем вовсе
+    (ТЗ 4.2), и читать по нему сделки, чтобы потом отказать, незачем.
+    """
+    client = _binance_client(key, secret)
+    async with client:
+        source = BinanceSource(client)
+        verdict = await source.check_key()
+        if verdict.refusal is not None:
+            code, message = verdict.refusal
+            raise AppError(code, message, 400, {"permissions": verdict.permissions})
+        accounts = await source.fetch_accounts()
+        trades = await source.probe_trades()
+
+    probe = Probe(
+        accounts=accounts,
+        entry_tags=[],
+        trades_seen=len(trades),
+        sample=[_sample_row(t) for t in trades[:5]],
+        # Тегов у биржи нет — это не сбой чтения словаря, а свойство источника.
+        # Отсюда своя разметка в нашей ленте, и экран узнаёт об этом отсюда.
+        tags_available=False,
+        tags_problem=None,
+        accounts_from_trades=False,
+        window_filter_honored=True,
+        mapping_errors=source.mapping_errors,
+        permissions=verdict.permissions,
+        symbols=source.symbols_seen,
+        hedge_detected=source.hedge_detected,
+        commission_assets=sorted(source.commission_assets),
+        key_warnings=list(verdict.warnings),
+    )
+    return probe, source, client
+
+
 async def connect(
     s: AsyncSession,
     user_id: uuid.UUID,
@@ -330,16 +459,34 @@ async def connect(
     if provider not in CONNECTABLE:
         raise AppError(
             "provider_not_supported",
-            f"Источник «{provider}» пока не подключается. TMM — сейчас, Binance — позже.",
+            f"Источник «{provider}» не подключается: сервис умеет TMM и Binance.",
             501,
         )
-    if secret:
+    key = (key or "").strip()
+    secret = (secret or "").strip() or None
+    if not key:
+        raise AppError("validation_failed", "Ключ не введён.", 400)
+    if provider == TMM and secret:
         raise AppError(
             "validation_failed", "У TMM нет секрета — нужен только ключ.", 400
         )
-    key = (key or "").strip()
-    if not key:
-        raise AppError("validation_failed", "Ключ не введён.", 400)
+    if provider == BINANCE:
+        if not secret:
+            raise AppError(
+                "validation_failed",
+                "У ключа Binance есть секрет — без него подпись не собрать.",
+                400,
+            )
+        # Рынок один. Спот — не параметр, а отдельная работа: там нет позиций
+        # и нет реализованного PnL, прибыль пришлось бы считать по FIFO
+        # (Архитектура ч.1 §5.1).
+        market = market or BINANCE_MARKET
+        if market != BINANCE_MARKET:
+            raise AppError(
+                "market_not_supported",
+                "Поддерживается только USDⓈ-M Futures.",
+                400,
+            )
     if not crypto.available():
         # Без мастер-ключа шифровать нечем, а хранить ключ открытым нельзя.
         raise AppError(
@@ -349,39 +496,50 @@ async def connect(
             503,
         )
 
-    probe, source, client = await probe_tmm(key)
+    if provider == BINANCE:
+        probe, source, client = await probe_binance(key, secret)
+        base_url = None
+    else:
+        probe, source, client = await probe_tmm(key)
+        base_url = client.base_in_use
 
-    existing = await repo.connection_by_provider(s, user_id, TMM, market)
+    existing = await repo.connection_by_provider(s, user_id, provider, market)
     capabilities = source.capabilities().as_dict()
     if existing is None:
         connection = await repo.create_connection(
             s,
             user_id=user_id,
-            provider=TMM,
+            provider=provider,
             capabilities=capabilities,
             market=market,
             key_masked=crypto.mask(key),
             key_encrypted=crypto.encrypt(key),
+            secret_encrypted=crypto.encrypt(secret) if secret else None,
             key_version=crypto.KEY_VERSION,
-            base_url=client.base_in_use,
+            base_url=base_url,
         )
+        connection.permissions = probe.permissions
+        await s.flush()
     else:
         # Повторное подключение — это замена ключа. Точку отсчёта не двигаем:
         # она означает «с какого момента сервис видит сделки», и сдвиг назад
         # втянул бы историю, а вперёд — стёр бы уже принятые дни из расчётов.
         connection = existing
         connection.key_encrypted = crypto.encrypt(key)
+        connection.secret_encrypted = crypto.encrypt(secret) if secret else None
         connection.key_masked = crypto.mask(key)
         connection.key_version = crypto.KEY_VERSION
         connection.capabilities = capabilities
-        connection.base_url = client.base_in_use
+        connection.permissions = probe.permissions
+        connection.base_url = base_url
         connection.state = "connected"
         connection.last_error = None
         await s.flush()
 
     accounts = await repo.upsert_accounts(s, user_id, connection.id, probe.accounts)
     await repo.learn_tags(s, user_id, connection.id, probe.entry_tags)
-    await _save_limits(s, connection.id, client)
+    if isinstance(client, TmmClient):
+        await _save_limits(s, connection.id, client)
 
     # Первый источник включаем сразу: подтверждать нечего, выбора нет.
     # Второй требует подтверждения — это отдельная операция с последствиями.
@@ -398,6 +556,31 @@ async def connect(
 
 def _warnings(probe: Probe) -> list[dict]:
     out: list[dict] = []
+    for code, message in probe.key_warnings or []:
+        out.append({"code": code, "message": message})
+    if probe.hedge_detected:
+        out.append(
+            {
+                "code": "hedge_mode",
+                "message": "Похоже, включён hedge-режим позиций. Сборка сделок "
+                "под него не проверялась: сверь суммы за день с биржей "
+                "внимательнее обычного.",
+            }
+        )
+    if probe.commission_assets:
+        out.append(
+            {
+                "code": "commission_not_usdt",
+                "message": "Комиссия оплачивается в "
+                + ", ".join(probe.commission_assets)
+                + " и в расчёт прибыли не входит. Для точных чисел отключи "
+                "оплату комиссии в BNB.",
+            }
+        )
+    if probe.permissions is not None:
+        # Источник без тегов — это не сбой, а свойство Binance, и отдельного
+        # предупреждения про недоступный словарь здесь быть не должно.
+        return out
     if not probe.tags_available:
         out.append(
             {
@@ -431,7 +614,7 @@ async def verify(s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID) 
     connection = await repo.connection_by_id(s, user_id, connection_id)
     if connection is None:
         raise AppError("not_found", "Подключение не найдено.", 404)
-    if connection.provider != TMM:
+    if connection.provider not in CONNECTABLE:
         raise AppError(
             "provider_not_supported",
             "Проверять нечего: у этого источника нет ключа.",
@@ -442,16 +625,31 @@ async def verify(s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID) 
 
     key = crypto.decrypt(connection.key_encrypted)
     try:
-        probe, source, client = await probe_tmm(key)
+        if connection.provider == BINANCE:
+            secret = (
+                crypto.decrypt(connection.secret_encrypted)
+                if connection.secret_encrypted
+                else ""
+            )
+            probe, source, client = await probe_binance(key, secret)
+        else:
+            probe, source, client = await probe_tmm(key)
     except AppError as exc:
+        # Права ключа могли измениться после подключения: трейдер включил
+        # вывод средств и забыл. Проверка обязана это заметить и погасить
+        # подключение, а не оставить его «подключённым» с прежним снимком прав.
         await repo.set_state(s, connection, "error", exc.message)
         raise
 
     await repo.set_state(s, connection, "connected", None)
     await repo.set_capabilities(s, connection, source.capabilities().as_dict())
+    if probe.permissions is not None:
+        connection.permissions = probe.permissions
+        await s.flush()
     accounts = await repo.upsert_accounts(s, user_id, connection.id, probe.accounts)
     await repo.learn_tags(s, user_id, connection.id, probe.entry_tags)
-    await _save_limits(s, connection.id, client)
+    if isinstance(client, TmmClient):
+        await _save_limits(s, connection.id, client)
     return {
         "connection": connection,
         "accounts": accounts,

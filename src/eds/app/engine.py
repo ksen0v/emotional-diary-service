@@ -85,8 +85,16 @@ async def run_day(
     *,
     now: dt.datetime | None = None,
     report: EngineReport | None = None,
+    unrealized_pct=rules_service.KEEP,
+    position_trigger: str | None = None,
 ) -> rules_engine.Counters:
-    """Пересчитать день и применить то, что из него следует."""
+    """Пересчитать день и применить то, что из него следует.
+
+    `unrealized_pct` приходит только от обновления позиций и только за сегодня:
+    у прошлого дня открытой позиции уже нет, и подставить туда сегодняшнее
+    число значило бы переписать историю числом из настоящего. По умолчанию
+    значение не трогается вовсе — обычный пересчёт дня про позиции не знает.
+    """
     moment = now or dt.datetime.now(dt.UTC)
     out = report or EngineReport()
     out.days += 1
@@ -94,7 +102,13 @@ async def run_day(
 
     facts = await facts_of_day(s, user_id, day)
     counters, firings = await rules_service.run_day(
-        s, user_id, day, facts, prefs.significance_pct
+        s,
+        user_id,
+        day,
+        facts,
+        prefs.significance_pct,
+        unrealized_pct=unrealized_pct,
+        position_trigger=position_trigger,
     )
 
     window_until = day_ends_at(day, prefs.timezone, prefs.day_cutoff)

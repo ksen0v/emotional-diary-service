@@ -6,6 +6,8 @@
 ТЗ 6.5 требует запрет, а не договорённость.
 """
 
+import re
+
 import httpx
 import pytest
 from sqlalchemy import text
@@ -42,6 +44,9 @@ async def create(client: httpx.AsyncClient, body: dict) -> httpx.Response:
 # --- словарь ---
 
 
+STEP_NUMBER = re.compile(r"шаг[аеу]?\s+\d")
+
+
 async def test_metrics_dictionary_follows_active_source(
     app_client: httpx.AsyncClient,
 ) -> None:
@@ -68,7 +73,12 @@ async def test_metrics_dictionary_follows_active_source(
     # Доверенного лица ещё нет — экран обязан сказать об этом, а не молча
     # предлагать настройку, которая никому ничего не отправит.
     assert out["buddy_available"] is False
-    assert "шаг" in out["buddy_note"]
+    assert "Telegram" in out["buddy_note"]
+    # Номера шага в пользовательском тексте быть не должно: порядок шагов
+    # меняется, а экран остаётся. Проверка здесь же, потому что именно этот
+    # текст дважды устаревал вместе с планом.
+    assert not STEP_NUMBER.search(out["buddy_note"])
+    assert not STEP_NUMBER.search(out["alert_note"])
 
 
 async def test_significance_threshold_comes_from_settings(

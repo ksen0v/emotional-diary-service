@@ -59,6 +59,22 @@ WIPE = (
     "DELETE FROM trades.trades WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.fake_feed WHERE connection_id IN ("
     " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    # Сырьё источника Binance: филлы, начисления, снимки баланса, состояние
+    # агрегатора и открытые позиции. Всё висит на подключении внешним ключом,
+    # поэтому чистится до него.
+    "DELETE FROM source.fills WHERE user_id IN (SELECT id FROM test_users)",
+    "DELETE FROM source.income WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.balance_snapshots WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.aggregate_state WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.positions WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.rate_limits WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
+    "DELETE FROM source.reconcile_runs WHERE connection_id IN ("
+    " SELECT id FROM source.connections WHERE user_id IN (SELECT id FROM test_users))",
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",

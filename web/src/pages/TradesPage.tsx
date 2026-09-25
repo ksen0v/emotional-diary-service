@@ -75,12 +75,24 @@ export function TradesPage() {
     enabled: hasSource,
   })
 
+  const [markError, setMarkError] = useState('')
+  const [markEffects, setMarkEffects] = useState<MarkedOut['effects'] | null>(null)
   const mark = useMutation({
     mutationFn: (args: { id: string; marking: string }) =>
       api.put<MarkedOut>(`/trades/${args.id}/marking`, { marking: args.marking }),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      setMarkError('')
+      setMarkEffects(data.effects)
       qc.invalidateQueries({ queryKey: ['trades'] })
       qc.invalidateQueries({ queryKey: ['marking-metrics'] })
+      // Отметка может мгновенно включить блокировку: экран «Сегодня» должен
+      // узнать об этом сразу, а не на следующей перезагрузке.
+      qc.invalidateQueries({ queryKey: ['today'] })
+      qc.invalidateQueries({ queryKey: ['curve'] })
+    },
+    onError: (err) => {
+      setMarkEffects(null)
+      setMarkError(err instanceof ApiError ? err.message : 'Не получилось отметить.')
     },
   })
 
@@ -119,7 +131,9 @@ export function TradesPage() {
         </div>
       )}
 
-      {hasSource && isFake && <DevPanel />}
+      {hasSource && isFake && (
+        <DevPanel positions={Boolean(active?.capabilities.provides_positions)} />
+      )}
 
       {hasSource && !isFake && (
         <div className="card" style={{ padding: '14px 18px' }}>
@@ -134,8 +148,9 @@ export function TradesPage() {
               {sync.isPending ? 'Сверяю…' : 'Сверить сейчас'}
             </button>
             <span className="hint" style={{ flex: 1 }}>
-              Сверка забирает сделки у источника. Автоматическая — по расписанию
-              и по событию из потока, это следующая часть шага 4.
+              Сверка забирает сделки у источника. Она идёт и сама: раз в десять
+              минут, а у источника с потоком исполнения приезжают сразу.
+              Кнопка — чтобы не ждать.
             </span>
           </div>
           {syncReport && (
@@ -249,6 +264,31 @@ export function TradesPage() {
               из {metrics.data.confidence.days_required}. Выводы делать рано.
             </div>
           )}
+        </div>
+      )}
+
+      {!provideTags && hasSource && (
+        <div className="hint">
+          Тегов у этого источника нет, поэтому нарушения отмечаешь ты — кнопками
+          в строке сделки. Отметка «нарушение» сразу поднимает системный триггер
+          SR-1, и снять её после этого нельзя: инцидент неудаляем.
+        </div>
+      )}
+
+      {markError && <div className="err">{markError}</div>}
+      {markEffects?.lock_started && (
+        <div className="card" style={{ padding: '12px 16px', borderLeft: '3px solid var(--bad)' }}>
+          Отметка включила блокировку до конца торгового дня этой сделки. Открой
+          «Сегодня», чтобы снять её разбором.
+        </div>
+      )}
+      {markEffects?.incident_opened && !markEffects.lock_started && (
+        <div className="card" style={{ padding: '12px 16px', borderLeft: '3px solid var(--warn)' }}>
+          Инцидент записан за {markEffects.incident_opened.day}.{' '}
+          {markEffects.incident_opened.outcome === 'breached'
+            ? 'После этой сделки в тот день ещё были входы — окно нарушено.'
+            : 'После этой сделки в тот день входов не было — окно соблюдено.'}{' '}
+          Блокировки нет: окно того дня уже закрылось.
         </div>
       )}
 

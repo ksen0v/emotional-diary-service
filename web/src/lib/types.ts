@@ -152,6 +152,22 @@ export type Probe = {
   accounts_from_trades: boolean
   window_filter_honored: boolean | null
   mapping_errors: string[]
+  // Ниже — про Binance. Снимок прав ключа показывается на экране: трейдер
+  // должен видеть, с чем сервис работает, а не верить на слово.
+  permissions: KeyPermissions | null
+  symbols: string[] | null
+  hedge_detected: boolean
+  commission_assets: string[] | null
+}
+
+export type KeyPermissions = {
+  enableReading?: boolean
+  enableWithdrawals?: boolean
+  enableFutures?: boolean
+  enableSpotAndMarginTrading?: boolean
+  enableMargin?: boolean
+  ipRestrict?: boolean
+  createTime?: number | null
 }
 
 export type ConnectResult = {
@@ -205,9 +221,24 @@ export type MarkingMetrics = {
   confidence: { enough_data: boolean; days_available: number; days_required: number }
 }
 
+// Ответ на свою разметку несёт последствия, а не только новую сделку
+// (Архитектура ч.2 §3.4): отметка может мгновенно включить блокировку,
+// и узнать об этом фронт обязан из ответа на собственный запрос.
 export type MarkedOut = {
   trade: Trade
-  effects: { changed: boolean; marking_before: string | null }
+  effects: {
+    changed: boolean
+    marking_before: string | null
+    incident_opened: { id: string; code: string; day: string; outcome: string } | null
+    lock_started: {
+      id: string
+      window_until: string
+      timer_until: string | null
+    } | null
+    streak: { current: number; previous: number }
+    recomputed_days: string[]
+    engine: Record<string, number | boolean>
+  }
   metrics: MarkingMetrics['marking']
 }
 
@@ -314,7 +345,7 @@ export type Lock = {
   review_filled: boolean
   unlock_short: string
   unlock_text: string
-  // Доверенное лицо появится на шаге 13.
+  // Доверенное лицо появится вместе с Telegram.
   buddy: null
   breach: Breach | null
 }

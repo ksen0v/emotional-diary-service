@@ -30,7 +30,30 @@ async def _resolve_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
     return dict(connection.capabilities) if connection else {}
 
 
-auth.register_source(_resolve_capabilities)
+async def _resolve_positions(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Открытые позиции активного источника — для платформы.
+
+    Так модуль trades рисует на кривой дня пунктир открытой позиции, не зная,
+    что модуль source вообще существует.
+    """
+    connection = await repo.active_connection(s, user_id)
+    if connection is None or not connection.capabilities.get("provides_positions"):
+        return {"available": False, "count": 0, "unrealized_usd": None, "pct": None}
+
+    rows = await repo.positions_of(s, connection.id)
+    balance = await repo.latest_balance(s, connection.id)
+    total = sum((row.unrealized_usd for row in rows), Decimal("0"))
+    base = balance.wallet_usdt if balance is not None else None
+    return {
+        "available": True,
+        "count": len(rows),
+        "unrealized_usd": total,
+        "pct": (total / base * 100) if base else None,
+        "symbols": [row.symbol for row in rows],
+    }
+
+
+auth.register_source(_resolve_capabilities, _resolve_positions)
 
 
 class AccountOut(BaseModel):
@@ -236,7 +259,10 @@ async def activate(
 
 
 class CapabilitiesIn(BaseModel):
-    provides_tags: bool
+    """Что изображать тестовому источнику. Не переданное не меняется."""
+
+    provides_tags: bool | None = None
+    provides_positions: bool | None = None
 
 
 @router.patch("/source/connections/fake/capabilities", response_model=ConnectionOut)
@@ -246,13 +272,54 @@ async def set_fake_capabilities(
     _: None = Depends(auth.check_csrf),
     s: AsyncSession = Depends(db.session),
 ) -> ConnectionOut:
-    """Только для тестового источника: изображать источник без тегов."""
+    """Только для тестового источника: изображать источник другого вида."""
     connection = await service.set_fake_capabilities(
-        s, user.user_id, provides_tags=body.provides_tags
+        s,
+        user.user_id,
+        provides_tags=body.provides_tags,
+        provides_positions=body.provides_positions,
     )
     accounts = await repo.accounts_of(s, connection.id)
     await s.commit()
     return _connection_out(connection, accounts)
+
+
+class FakePositionIn(BaseModel):
+    """Открытая позиция для тестового источника — dev-панель."""
+
+    symbol: str = "ETHUSDT"
+    qty: Decimal = Decimal("1.5")
+    entry_price: Decimal = Decimal("2500")
+    mark_price: Decimal = Decimal("2400")
+    unrealized_usd: Decimal = Decimal("-150")
+    wallet_usdt: Decimal = Decimal("20000")
+
+
+@router.post("/source/dev/position")
+async def push_fake_position(
+    body: FakePositionIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Положить открытую позицию в тестовый источник.
+
+    Нужно, чтобы просадка с учётом нереализованного проверялась без живого
+    ключа биржи: иначе единственный способ увидеть этот экран — сидеть
+    в минусе по-настоящему.
+    """
+    out = await service.push_fake_position(
+        s,
+        user.user_id,
+        symbol=body.symbol,
+        qty=body.qty,
+        entry_price=body.entry_price,
+        mark_price=body.mark_price,
+        unrealized_usd=body.unrealized_usd,
+        wallet_usdt=body.wallet_usdt,
+    )
+    await s.commit()
+    return out
 
 
 @router.get("/source/tags", response_model=TagsOut)
@@ -330,6 +397,13 @@ class ProbeOut(BaseModel):
     accounts_from_trades: bool
     window_filter_honored: bool | None
     mapping_errors: list[str]
+    # Ниже — про Binance. Снимок прав ключа показывается на экране: трейдер
+    # должен видеть, с чем сервис работает, а не верить на слово, что ключ
+    # только на чтение.
+    permissions: dict | None = None
+    symbols: list[str] | None = None
+    hedge_detected: bool = False
+    commission_assets: list[str] | None = None
 
 
 class WarningOut(BaseModel):

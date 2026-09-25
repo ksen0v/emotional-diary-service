@@ -19,7 +19,7 @@ from eds.modules.rules import system as sysrules
 from eds.modules.rules.models import RuleRow
 from eds.platform.errors import AppError, not_found
 
-# Доверенное лицо появится на шаге 13 вместе с модулем notifications и двойным
+# Доверенное лицо появится вместе с модулем notifications и двойным
 # согласием. До тех пор подтверждённого контакта не существует ни у кого, и
 # правила с условием buddy создать нельзя — так требует ТЗ 6.8, и это лучше
 # заглушки, которая примет настройку и никому ничего не отправит.
@@ -194,7 +194,7 @@ async def listing(
             # Подпись под заголовком «Системные · отключить нельзя»: короткая,
             # потому что подробности стоят на самих карточках.
             "system_note": (
-                "Пока не срабатывают — их условия появятся на шаге 10."
+                "Пока не срабатывают: их условия ещё не подключены."
             ),
             "shadow_note": (
                 "Режим наблюдения включён: правило посчитается и инцидент "
@@ -408,18 +408,23 @@ def metrics_catalog(
     catalog = dic.catalog(capabilities, significance_pct)
     catalog["buddy_available"] = HAS_CONFIRMED_CONTACT
     catalog["buddy_note"] = (
-        "Доверенное лицо появится на шаге 13: нужен Telegram-бот и двойное согласие."
+        "Доверенное лицо появится вместе с Telegram: нужен бот и двойное согласие."
     )
     # Канал алерта. Фраза правила по-прежнему говорит «придёт алерт в Telegram»
     # — она описывает само правило, а не готовность канала, и уйдёт в инцидент
     # как текст на момент срабатывания. А вот экран обязан сказать, куда алерт
     # уходит сегодня: иначе трейдер будет ждать сообщение в Telegram, которого
-    # до шага 13 не будет.
+    # пока нет.
     catalog["alert_note"] = (
-        "Telegram появится на шаге 13. До тех пор алерт пишется в журнал "
-        "сервиса, а блокировку видно на экране."
+        "Telegram ещё не подключён. Пока алерт пишется в журнал сервиса, "
+        "а блокировку видно на экране."
     )
     return catalog
+
+
+# Отличает «не передано» от «передано пусто»: пусто означает «открытых позиций
+# нет», не передано — «эта ветка про позиции ничего не знает».
+KEEP = object()
 
 
 # --- движок (шаг 9) ---
@@ -452,6 +457,9 @@ async def run_day(
     day: dt.date,
     facts: list[TradeFact],
     significance_pct: Decimal,
+    *,
+    unrealized_pct: Decimal | None | object = KEEP,
+    position_trigger: str | None = None,
 ) -> tuple[engine.Counters, list[Firing]]:
     """Пройти день сделка за сделкой и собрать срабатывания.
 
@@ -465,6 +473,14 @@ async def run_day(
     третьей, четвёртой и пятой убыточной сделке — по инциденту на каждую.
     Срабатывание — событие, а не состояние; предыдущее состояние условия
     берётся из журнала проверок, поэтому повторный проход ничего не добавляет.
+
+    **Открытая позиция проверяется отдельным поводом.** Закрытая сделка
+    проверяет правила по закрытым числам, обновление позиции — по числам
+    с учётом нереализованного. Разделение не формальное: иначе правило про
+    просадку с открытой позицией срабатывало бы только в момент, когда что-то
+    закрылось, то есть уже после тильта, ради которого оно написано. На этом
+    поводе проверяются только правила, которые от позиций и зависят: остальным
+    нереализованное ничего не меняет, а журнал проверок рос бы каждую минуту.
     """
     rules = await repo.active_user_rules(s, user_id)
     done = await repo.evaluations_of_day(s, user_id, day)
@@ -511,6 +527,51 @@ async def run_day(
                         day=day,
                         trigger_ref=trigger_ref,
                         trade_id=fact.trade_id,
+                        actions=dict(rule.actions),
+                        unlock=dict(rule.unlock),
+                        snapshot=snapshot,
+                    )
+                )
+
+    # Нереализованное приходит только от обновления позиций. Обычный пересчёт
+    # дня про него ничего не знает и не имеет права затирать: иначе открытие
+    # экрана «Сегодня» стирало бы просадку с открытой позицией, посчитанную
+    # минуту назад. Поэтому «не передано» и «передано пусто» — разные вещи.
+    if unrealized_pct is KEEP:
+        stored = await repo.counters_of(s, user_id, day)
+        unrealized_pct = stored.unrealized_pct if stored is not None else None
+    counters = engine.with_unrealized(counters, unrealized_pct)
+
+    if position_trigger is not None and unrealized_pct is not None:
+        for rule in rules:
+            if not engine.uses_position_metric(rule.conditions):
+                continue
+            met = engine.evaluate(rule.conditions, counters)
+            already = done.get((rule.id, position_trigger))
+            if already is not None:
+                continue
+            fired = met and not was_met.get(rule.id, False)
+            snapshot = _jsonable({**counters.as_dict(), "met": met})
+            written = await repo.record_evaluation(
+                s,
+                user_id,
+                rule.id,
+                day,
+                trigger_ref=position_trigger,
+                fired=fired,
+                snapshot=snapshot,
+            )
+            was_met[rule.id] = met
+            if fired and written:
+                firings.append(
+                    Firing(
+                        rule_id=rule.id,
+                        rule_name=rule.name,
+                        rule_text=rule_out(rule)["human_text"],
+                        rule_version=rule.version,
+                        day=day,
+                        trigger_ref=position_trigger,
+                        trade_id=None,
                         actions=dict(rule.actions),
                         unlock=dict(rule.unlock),
                         snapshot=snapshot,

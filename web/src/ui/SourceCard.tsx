@@ -8,7 +8,7 @@ import type {
   Probe,
   SwitchConsequences,
 } from '../lib/types'
-import { ProbeView, TmmConnect } from './TmmConnect'
+import { KeyRights, ProbeView, SourceConnect } from './SourceConnect'
 import { dateTime } from './format'
 
 const LABELS: Record<string, string> = {
@@ -34,10 +34,12 @@ export function SourceCard() {
   const qc = useQueryClient()
   const connections = useConnections()
   const rows = connections.data?.connections ?? []
-  const tmm = rows.find((c) => c.provider === 'tmm')
   const fake = rows.find((c) => c.provider === 'fake')
+  // Настоящий источник может быть только один активный, но подключены могут
+  // быть оба: переключение между ними — отдельная операция с подтверждением.
+  const real = rows.filter((c) => c.provider !== 'fake')
 
-  const [replaceKey, setReplaceKey] = useState(false)
+  const [replaceKey, setReplaceKey] = useState<string | null>(null)
   const [switching, setSwitching] = useState<
     { id: string; details: SwitchConsequences } | null
   >(null)
@@ -107,10 +109,8 @@ export function SourceCard() {
   // Переключатель только для тестового источника: он позволяет проверить
   // свою разметку до появления Binance, у которого тегов нет.
   const pretend = useMutation({
-    mutationFn: (providesTags: boolean) =>
-      api.patch<Connection>('/source/connections/fake/capabilities', {
-        provides_tags: providesTags,
-      }),
+    mutationFn: (patch: { provides_tags?: boolean; provides_positions?: boolean }) =>
+      api.patch<Connection>('/source/connections/fake/capabilities', patch),
     onSuccess: refresh,
   })
 
@@ -209,6 +209,12 @@ export function SourceCard() {
             ))}
           </div>
 
+          {row.permissions && (
+            <div style={{ marginTop: 12 }}>
+              <KeyRights permissions={row.permissions} />
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
             {!row.is_active && (
               <button
@@ -228,12 +234,12 @@ export function SourceCard() {
                 {verify.isPending ? 'Проверяю…' : 'Проверить'}
               </button>
             )}
-            {row.provider === 'tmm' && (
+            {row.provider !== 'fake' && (
               <button
-                onClick={() => setReplaceKey(!replaceKey)}
+                onClick={() => setReplaceKey(replaceKey === row.provider ? null : row.provider)}
                 style={{ fontSize: 12, padding: '6px 12px' }}
               >
-                {replaceKey ? 'Не менять ключ' : 'Заменить ключ'}
+                {replaceKey === row.provider ? 'Не менять ключ' : 'Заменить ключ'}
               </button>
             )}
             {removing === row.id ? (
@@ -277,7 +283,9 @@ export function SourceCard() {
               }}
             >
               <button
-                onClick={() => pretend.mutate(!row.capabilities.provides_tags)}
+                onClick={() =>
+                  pretend.mutate({ provides_tags: !row.capabilities.provides_tags })
+                }
                 disabled={pretend.isPending}
                 className={row.capabilities.provides_tags ? '' : 'primary'}
                 style={{ fontSize: 12, padding: '6px 12px' }}
@@ -286,9 +294,24 @@ export function SourceCard() {
                   ? 'Изображать источник без тегов'
                   : 'Вернуть теги источника'}
               </button>
+              <button
+                onClick={() =>
+                  pretend.mutate({
+                    provides_positions: !row.capabilities.provides_positions,
+                  })
+                }
+                disabled={pretend.isPending}
+                className={row.capabilities.provides_positions ? 'primary' : ''}
+                style={{ fontSize: 12, padding: '6px 12px' }}
+              >
+                {row.capabilities.provides_positions
+                  ? 'Убрать открытые позиции'
+                  : 'Изображать источник с позициями'}
+              </button>
               <span className="hint" style={{ flex: 1 }}>
-                Без тегов разметка живёт у нас: нарушения отмечаются кнопками
-                в ленте сделок. Так будет работать Binance.
+                Так работает Binance: тегов нет — нарушения отмечаются кнопками
+                в ленте сделок; открытые позиции есть — просадка считается
+                с учётом незакрытого минуса.
               </span>
             </div>
           )}
@@ -343,9 +366,27 @@ export function SourceCard() {
         </div>
       )}
 
-      {(!tmm || replaceKey) && (
+      {(real.length === 0 || replaceKey !== null) && (
         <div style={{ marginBottom: 14 }}>
-          <TmmConnect replacing={Boolean(tmm)} onDone={() => setReplaceKey(false)} />
+          <SourceConnect
+            initial={replaceKey === 'binance' ? 'binance' : 'tmm'}
+            replacing={replaceKey !== null}
+            onDone={() => setReplaceKey(null)}
+          />
+        </div>
+      )}
+      {real.length > 0 && replaceKey === null && real.length < 2 && (
+        <div style={{ marginBottom: 14 }}>
+          <button
+            onClick={() => setReplaceKey(real[0].provider === 'tmm' ? 'binance' : 'tmm')}
+            style={{ fontSize: 12, padding: '6px 12px' }}
+          >
+            Подключить второй источник
+          </button>
+          <div className="hint" style={{ marginTop: 6 }}>
+            Активным остаётся один: переключение — отдельная кнопка, с
+            подтверждением. Метрики и стрик считаются только по активному.
+          </div>
         </div>
       )}
 

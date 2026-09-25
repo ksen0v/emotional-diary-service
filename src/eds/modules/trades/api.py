@@ -118,7 +118,7 @@ def _decode_cursor(cursor: str | None) -> tuple[dt.datetime, uuid.UUID] | None:
         raise AppError("bad_cursor", "Курсор списка повреждён.", 400) from exc
 
 
-def _trade_out(trade: Trade, tags: list[TradeTag]) -> TradeOut:
+def trade_out(trade: Trade, tags: list[TradeTag]) -> TradeOut:
     return TradeOut(
         id=trade.id,
         external_id=trade.external_id,
@@ -171,7 +171,7 @@ async def feed(
     totals = await service.totals(s, user.user_id, days, marking)
 
     return FeedOut(
-        items=[_trade_out(row, tags.get(row.id, [])) for row in rows],
+        items=[trade_out(row, tags.get(row.id, [])) for row in rows],
         next_cursor=_encode_cursor(rows[-1]) if rows and has_more else None,
         has_more=has_more,
         totals=TotalsOut(
@@ -202,6 +202,15 @@ async def day_curve(
     target = day or _today(prefs)
     points = await service.curve(s, user.user_id, target)
     last = points[-1] if points else None
+    # Открытые позиции спрашиваем у платформы: модуль trades не должен знать,
+    # что модуль source существует. Пунктир открытой позиции на кривой рисуется
+    # по этому значению — и только за сегодня: у прошлого дня открытой позиции
+    # уже нет, и подставить туда сегодняшнюю значило бы переписать историю.
+    positions = (
+        await auth.open_positions(s, user.user_id)
+        if target == _today(prefs)
+        else {"available": False, "pct": None}
+    )
     return CurveOut(
         day=target,
         points=[
@@ -216,7 +225,14 @@ async def day_curve(
         ],
         # Источник без открытых позиций не даёт нереализованного убытка.
         # null, а не ноль: ноль означал бы «позиций нет», а это другое.
-        unrealized={"available": False, "pct": None},
+        unrealized={
+            "available": bool(positions.get("available")),
+            "pct": (
+                service.quantize_pct(positions["pct"])
+                if positions.get("pct") is not None
+                else None
+            ),
+        },
         close={
             "equity_pct": service.quantize_pct(last.equity_pct) if last else Decimal("0"),
             "peak_pct": service.quantize_pct(last.peak_pct) if last else Decimal("0"),
@@ -252,35 +268,12 @@ async def marking_metrics(
     )
 
 
-@router.put("/trades/{trade_id}/marking", response_model=MarkedOut)
-async def mark(
-    trade_id: uuid.UUID,
-    body: MarkingIn,
-    user: auth.CurrentUser = Depends(auth.current_user),
-    prefs: auth.UserPrefs = Depends(auth.current_prefs),
-    _: None = Depends(auth.check_csrf),
-    s: AsyncSession = Depends(db.session),
-) -> MarkedOut:
-    """Своя разметка сделки — когда источник не отдаёт теги.
-
-    Возможности источника спрашиваем через платформу: модуль trades не должен
-    знать, что модуль source вообще существует.
-    """
-    provides_tags = await auth.source_provides_tags(s, user.user_id)
-    trade, effects = await service.mark_by_user(
-        s, user.user_id, trade_id, body.marking, source_provides_tags=provides_tags
-    )
-    computed, _confidence = await service.marking_metrics(
-        s, user.user_id, service.period_days("month", _today(prefs))
-    )
-    await s.commit()
-
-    tags = await repo.tags_of(s, [trade.id])
-    return MarkedOut(
-        trade=_trade_out(trade, tags.get(trade.id, [])),
-        effects=MarkingEffects(**effects),
-        metrics=computed.as_dict(),
-    )
+# Эндпоинт разметки живёт в оркестрации (`app/api.py`), а не здесь.
+# Причина не в удобстве: отметка «не по системе» мгновенно поднимает SR-1,
+# блокировку и пересчёт стрика, то есть задевает rules, incidents и streaks.
+# Собрать такой ответ из модуля trades нельзя, не узнав о трёх чужих схемах.
+# Формы `MarkingIn`, `MarkedOut` и `trade_out` остаются здесь: это форма
+# сделки, и она принадлежит этому модулю.
 
 
 @router.get("/trades/{trade_id}", response_model=TradeOut)
@@ -293,4 +286,4 @@ async def one(
     if trade is None:
         raise not_found("Сделка не найдена.")
     tags = await repo.tags_of(s, [trade.id])
-    return _trade_out(trade, tags.get(trade.id, []))
+    return trade_out(trade, tags.get(trade.id, []))

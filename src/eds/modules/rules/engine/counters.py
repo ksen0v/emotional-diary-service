@@ -37,7 +37,7 @@ class Counters:
     last_trade_id: uuid.UUID | None = None
     # Источник без открытых позиций их не даёт. None, а не ноль: ноль значил бы
     # «открытых позиций нет», а это другое (Архитектура ч.2 §3.5). Появятся
-    # вместе с Binance на шаге 14.
+    # вместе с источником, который отдаёт открытые позиции.
     unrealized_pct: Decimal | None = None
     drawdown_full_pct: Decimal | None = None
 
@@ -110,6 +110,42 @@ def apply(counter: Counters, trade: TradeFact, significance_pct: Decimal) -> Cou
         loss_streak=loss_streak,
         last_trade_id=trade.trade_id,
     )
+
+
+# Показатели, которых нет без открытых позиций. Правило на них проверяется
+# не на закрытой сделке, а на обновлении позиции: иначе «просадка с учётом
+# открытой» узнавалась бы только в момент, когда что-то закрылось, то есть
+# ровно после того, как тильт закончился.
+POSITION_METRICS = frozenset({"unrealized_pct", "drawdown_full_pct"})
+
+
+def with_unrealized(counter: Counters, unrealized_pct: Decimal | None) -> Counters:
+    """Досчитать показатели с учётом открытой позиции.
+
+    Пик берётся максимумом из реализованного пика и текущей точки с открытой
+    позицией: если незакрытая прибыль увела счёт выше всего, что было закрыто,
+    просадка от этой вершины — ноль, и это правда.
+
+    Чего здесь нет и быть не может: пика, который открытая позиция проходила
+    между нашими замерами. Мы знаем только текущее значение, поэтому просадка
+    с учётом нереализованного — это просадка от известного пика, а не от
+    настоящего. Сказать иначе значило бы обещать данные, которых у нас нет.
+    """
+    if unrealized_pct is None:
+        return replace(counter, unrealized_pct=None, drawdown_full_pct=None)
+    current = counter.equity_pct + unrealized_pct
+    peak = max(counter.peak_pct, current)
+    return replace(
+        counter,
+        unrealized_pct=unrealized_pct,
+        drawdown_full_pct=peak - current,
+    )
+
+
+def uses_position_metric(conditions: dict | None) -> bool:
+    """Зависит ли правило от открытых позиций."""
+    items = list((conditions or {}).get("items", []))
+    return any(str(item.get("metric")) in POSITION_METRICS for item in items)
 
 
 def _is_significant(trade: TradeFact, significance_pct: Decimal) -> bool:

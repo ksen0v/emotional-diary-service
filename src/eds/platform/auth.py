@@ -49,10 +49,12 @@ class UserPrefs:
 UserResolver = Callable[[AsyncSession, str], Awaitable[CurrentUser]]
 PrefsResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[UserPrefs]]
 CapabilitiesResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
+PositionsResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
 
 _user_resolver: UserResolver | None = None
 _prefs_resolver: PrefsResolver | None = None
 _capabilities_resolver: CapabilitiesResolver | None = None
+_positions_resolver: PositionsResolver | None = None
 
 
 def register(user: UserResolver, prefs: PrefsResolver) -> None:
@@ -62,14 +64,18 @@ def register(user: UserResolver, prefs: PrefsResolver) -> None:
     _prefs_resolver = prefs
 
 
-def register_source(capabilities: CapabilitiesResolver) -> None:
+def register_source(
+    capabilities: CapabilitiesResolver, positions: PositionsResolver | None = None
+) -> None:
     """Вызывается модулем source. Больше никем.
 
-    Через это модуль trades узнаёт, отдаёт ли активный источник теги, не зная
-    о существовании модуля source.
+    Через это модуль trades узнаёт, отдаёт ли активный источник теги и какой
+    у него сейчас нереализованный результат, не зная о существовании модуля
+    source. Тем же путём ходят таймзона и порог значимости.
     """
-    global _capabilities_resolver
+    global _capabilities_resolver, _positions_resolver
     _capabilities_resolver = capabilities
+    _positions_resolver = positions
 
 
 async def check_csrf(request: Request) -> None:
@@ -127,3 +133,15 @@ async def source_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
 async def source_provides_tags(s: AsyncSession, user_id: uuid.UUID) -> bool:
     caps = await source_capabilities(s, user_id)
     return bool(caps.get("provides_tags", False))
+
+
+async def open_positions(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Открытые позиции активного источника.
+
+    `available: False` — источник их не отдаёт. Это не то же самое, что
+    «позиций нет»: в первом случае строку на экране не показывают вовсе,
+    во втором показывают ноль (Архитектура ч.2 §3.5).
+    """
+    if _positions_resolver is None:
+        return {"available": False, "count": 0, "unrealized_usd": None, "pct": None}
+    return await _positions_resolver(s, user_id)

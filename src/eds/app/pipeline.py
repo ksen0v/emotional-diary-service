@@ -10,6 +10,7 @@ import datetime as dt
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,8 @@ from eds.contracts.ingest import IngestContext, IngestReport
 from eds.contracts.source import TradeSource
 from eds.modules.identity import repo as identity_repo
 from eds.modules.source import repo as source_repo
+from eds.modules.source.adapters.binance.rest import WEIGHT_LIMIT_1M, BinanceClient
+from eds.modules.source.adapters.binance.source import BinanceSource
 from eds.modules.source.adapters.fake.source import FakeSource
 from eds.modules.source.adapters.tmm.rest import TmmClient
 from eds.modules.source.adapters.tmm.source import TmmSource
@@ -32,29 +35,54 @@ log = logging.getLogger("eds.pipeline")
 @contextlib.asynccontextmanager
 async def source_for(
     s: AsyncSession, connection: Connection
-) -> AsyncIterator[tuple[TradeSource, TmmClient | None]]:
+) -> AsyncIterator[tuple[TradeSource, TmmClient | BinanceClient | None]]:
     """Адаптер активного источника вместе с его сетевым клиентом.
 
     Контекст, а не функция: у сетевого источника есть соединение, которое надо
     закрыть, и забыть про это легко. Второе значение — клиент, если он есть:
     из него после прохода забираются прочитанные лимиты провайдера.
-    Шаг 14 добавит сюда binance.
     """
     if connection.provider == "fake":
-        yield FakeSource(s, connection.id), None
+        # Возможности фейка живут в подключении: он умеет изображать и TMM,
+        # и источник без тегов с открытыми позициями.
+        yield FakeSource(s, connection.id, connection.capabilities), None
         return
 
+    if not connection.key_encrypted:
+        raise AppError(
+            "key_missing",
+            "У подключения не сохранён ключ. Подключи источник заново.",
+            409,
+        )
+    key = crypto.decrypt(connection.key_encrypted)
+
     if connection.provider == "tmm":
-        if not connection.key_encrypted:
-            raise AppError(
-                "key_missing",
-                "У подключения не сохранён ключ. Подключи источник заново.",
-                409,
-            )
-        key = crypto.decrypt(connection.key_encrypted)
         client = TmmClient(key)
         async with client:
             yield TmmSource(client), client
+        return
+
+    if connection.provider == "binance":
+        if not connection.secret_encrypted:
+            raise AppError(
+                "key_missing",
+                "У подключения Binance не сохранён секрет. Подключи источник заново.",
+                409,
+            )
+        secret = crypto.decrypt(connection.secret_encrypted)
+        binance = BinanceClient(key, secret)
+        async with binance:
+            # Источнику нужна сессия: сделок биржа не отдаёт, он собирает их
+            # из своих же сохранённых исполнений (Архитектура ч.1 §5.5).
+            yield (
+                BinanceSource(
+                    binance,
+                    s=s,
+                    connection_id=connection.id,
+                    user_id=connection.user_id,
+                ),
+                binance,
+            )
         return
 
     raise AppError(
@@ -178,13 +206,26 @@ async def _run_sync(
         ctx = await build_context(s, user_id, connection)
         report = await trades_service.ingest_batch(s, ctx, trades)
 
-        if client is not None:
+        if isinstance(client, TmmClient):
             await source_repo.save_rate_limit(
                 s,
                 connection.id,
                 limit_value=client.rate_limit.limit,
                 remaining=client.rate_limit.remaining,
                 reset_at=client.rate_limit.reset_at,
+            )
+        elif isinstance(client, BinanceClient):
+            # Binance считает не остаток запросов, а использованный вес на IP.
+            # Кладём в ту же таблицу остаток, а не использованное: колонка
+            # называется `remaining`, и класть в неё обратное по смыслу число
+            # значило бы завести второй язык внутри одной таблицы.
+            used = client.weight.used_1m
+            await source_repo.save_rate_limit(
+                s,
+                connection.id,
+                limit_value=WEIGHT_LIMIT_1M,
+                remaining=None if used is None else WEIGHT_LIMIT_1M - used,
+                reset_at=None,
             )
     return report
 
@@ -194,3 +235,91 @@ def today_for(timezone: str, cutoff: dt.time, now: dt.datetime | None = None) ->
     from eds.modules.trades.normalize import trading_day
 
     return trading_day(now or dt.datetime.now(dt.UTC), timezone, cutoff)
+
+
+async def refresh_positions(
+    s: AsyncSession, user_id: uuid.UUID, *, now: dt.datetime | None = None
+) -> dict:
+    """Перечитать открытые позиции и досчитать по ним показатели дня.
+
+    Существует ровно ради одного: просадка с учётом нереализованного — это
+    момент тильта, когда трейдер сидит в минусе и ничего не закрывает. Если
+    считать её только на закрытой сделке, правило сработает после того, как
+    всё уже случилось.
+
+    Источник без открытых позиций сюда не попадает и не должен: `null` в
+    счётчиках означает «источник этого не даёт», а ноль означал бы «открытых
+    позиций нет» (Архитектура ч.2 §3.5).
+    """
+    moment = now or dt.datetime.now(dt.UTC)
+    connection = await source_repo.active_connection(s, user_id)
+    if connection is None:
+        raise AppError("no_active_source", "Источник сделок не подключён.", 409)
+    if not connection.capabilities.get("provides_positions"):
+        return {"available": False, "positions": 0, "unrealized_pct": None}
+
+    async with source_for(s, connection) as (source, _client):
+        positions = await source.fetch_positions()
+        balance = await source.fetch_balance()
+
+    if balance is not None:
+        await source_repo.save_balance(
+            s,
+            connection.id,
+            balance.taken_at,
+            balance.wallet_usdt,
+            balance.equity_usdt,
+        )
+
+    base = balance.wallet_usdt if balance is not None else None
+    rows = []
+    total = Decimal("0")
+    for position in positions:
+        total += position.unrealized_usd
+        rows.append(
+            {
+                "symbol": position.symbol,
+                "position_side": position.position_side,
+                "qty": position.qty,
+                "entry_price": position.entry_price,
+                "mark_price": position.mark_price,
+                "unrealized_usd": position.unrealized_usd,
+                "unrealized_pct": (
+                    position.unrealized_usd / base * 100
+                    if base
+                    else Decimal("0")
+                ),
+                "liquidation": position.liquidation,
+            }
+        )
+    await source_repo.save_positions(s, connection.id, rows)
+
+    # Без баланса процент не посчитать. Ноль здесь был бы хуже пустоты:
+    # он читался бы как «открытых позиций нет».
+    unrealized_pct = (total / base * 100) if base else None
+
+    prefs = await auth.prefs_of(s, user_id)
+    day = today_for(prefs.timezone, prefs.day_cutoff, moment)
+    # Повод с точностью до минуты: обновление позиций приходит часто, а
+    # срабатывание правила — событие, и журнал проверок отсекает повтор
+    # внутри той же минуты.
+    trigger = f"positions:{day.isoformat()}:{moment:%H:%M}"
+    counters = await engine.run_day(
+        s,
+        user_id,
+        prefs,
+        day,
+        now=moment,
+        unrealized_pct=unrealized_pct,
+        position_trigger=trigger,
+    )
+    return {
+        "available": True,
+        "positions": len(rows),
+        "unrealized_pct": str(unrealized_pct) if unrealized_pct is not None else None,
+        "drawdown_full_pct": (
+            str(counters.drawdown_full_pct)
+            if counters.drawdown_full_pct is not None
+            else None
+        ),
+    }
