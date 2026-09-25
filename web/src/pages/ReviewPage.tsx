@@ -90,11 +90,10 @@ export function ReviewPage() {
                 value={String(f.violations)}
                 color={f.violations > 0 ? 'var(--bad)' : undefined}
               />
-              <Fact
-                label="Сработало правил"
-                value={String(f.rules_fired)}
-                sub="шаг 9"
-              />
+              {/* Подпись «шаг 9» стояла здесь до шага 11 — уже после того,
+                  как шаг 9 прошёл и число стало настоящим. Заглушка не гаснет
+                  сама, когда шаг закрывается: её надо снимать руками. */}
+              <Fact label="Сработало правил" value={String(f.rules_fired)} />
               <Fact
                 label="Покрытие разметкой"
                 value={`${Number(f.coverage_pct).toFixed(0)}%`}

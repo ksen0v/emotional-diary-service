@@ -126,14 +126,16 @@ async def test_violation_tag_fires_once_per_trade(
     assert feed["totals"]["count"] == 1
 
 
-async def test_late_tag_does_nothing_until_step_11(
+async def test_late_tag_does_not_lock_today(
     app_client: httpx.AsyncClient,
 ) -> None:
     """Тег на сделке прошлого дня не включает блокировку на сегодня.
 
-    ТЗ 4.4: окно блокировки истекло вместе с тем днём. Разбор того дня —
-    ретропроверка — это шаг 11, и пока её нет, честный ответ на поздний тег
-    это НИЧЕГО: ни блокировки, ни инцидента без исхода.
+    ТЗ 4.4: окно блокировки истекло вместе с тем днём. Вместо блокировки идёт
+    ретропроверка того дня — она и её исходы проверяются в `test_retro.py`,
+    а здесь сторожится ровно граница между двумя ветками SR-1: живой тег
+    блокирует, поздний — нет, и инцидента с кодом `violation` у него не
+    появляется, потому что это другое событие.
 
     Проверяется тестом, а не руками, потому что руками для этого нужно
     дождаться следующего дня.
@@ -149,12 +151,14 @@ async def test_late_tag_does_nothing_until_step_11(
     assert body["state"] != "locked"
     assert body["incidents"] == []
 
-    # Инцидента по тегу нет ни за сегодня, ни за тот день: его запишет
-    # ретропроверка на шаге 11 — вместе с исходом, который считает она же.
-    # (Инцидент SR-3 за тот день при этом появиться может и должен: сделки
-    # без допуска были, и к позднему тегу это отношения не имеет.)
+    # Инцидента `violation` нет ни за сегодня, ни за тот день: поздний тег
+    # записывается своим кодом `retro_tag` и своим исходом, который считает
+    # ретропроверка. (Инцидент SR-3 за тот день при этом появиться может и
+    # должен: сделки без допуска были, и к позднему тегу это отношения не
+    # имеет.)
     feed = await incidents(app_client, period="all")
     assert [i["code"] for i in feed["items"] if i["code"] == "violation"] == []
+    assert [i["code"] for i in feed["items"] if i["code"] == "retro_tag"]
 
 
 # --- SR-2: сделка во время блокировки ---
@@ -418,3 +422,40 @@ async def test_history_cannot_be_edited_or_deleted(
 
     res = await app_client.delete("/api/v1/incidents/whatever", headers=csrf(app_client))
     assert res.status_code in (404, 405)
+
+
+async def test_diary_shows_the_real_locks_of_the_day(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Дневник показывает настоящие блокировки, а не нули-заглушки.
+
+    Долг шагов 9 и 10, найденный на шаге 11. В `_day_facts` и `period_facts`
+    стояли нули с подписью «появятся на шаге 9»; шаги прошли, нули остались —
+    и дневник говорил «блокировок не было» за день, в котором блокировка была
+    нарушена, а метрика ТЗ 5.1 «Compliance блокировок» показывала 100%.
+
+    Это ровно та болезнь, от которой лечился экран правил: экран молчал там,
+    где обязан был говорить. Поэтому проверка стоит тестом, а не глазами.
+    """
+    await setup(app_client)
+    await push(app_client, tags=[VIOLATION_TAG], minutes_ago=0)
+    await sync(app_client)
+    await mark_tag_as_violation(app_client)
+    await asyncio.sleep(1.5)
+    await push(app_client, symbol="ETHUSDT", minutes_ago=0, duration_sec=1)
+    await sync(app_client)
+
+    body = await today(app_client)
+    res = await app_client.get("/api/v1/entries", params={"level": "day"})
+    assert res.status_code == 200, res.text
+    facts = next(
+        item["facts"]
+        for item in res.json()["items"]
+        if item["period_start"] == body["day"]
+    )
+
+    # Блокировка была и была нарушена: соблюдено ноль из одной.
+    assert facts["locks"] == 1
+    assert facts["locks_kept"] == 0
+    # Срабатывания тоже настоящие: SR-1 по тегу и SR-2 по сделке внутри окна.
+    assert facts["rules_fired"] >= 2

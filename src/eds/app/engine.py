@@ -43,6 +43,10 @@ class EngineReport:
     # «сработало 3» без разбивки не отвечает на вопрос, что именно сработало,
     # а на приёмке спрашивают именно это.
     system_fired: int = 0
+    # Ретропроверки позднего тега — отдельным числом от системных срабатываний.
+    # Они меняют не сегодня, а прошлый день, и на приёмке это первое, что надо
+    # различить: «сработало 3» без этого не отвечает, сколько из них про вчера.
+    retro_checked: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -52,6 +56,7 @@ class EngineReport:
             "breaches": self.breaches,
             "shadow": self.shadow,
             "system_fired": self.system_fired,
+            "retro_checked": self.retro_checked,
         }
 
 
@@ -116,9 +121,10 @@ async def run_day(
     # Порядок не косметический: SR-1 сам включает блокировку, и compliance
     # обязан считать её уже идущей, иначе сделка, открытая после тега,
     # проскочила бы мимо SR-2 до следующего прохода.
-    locks = await system_rules.sr1_violations(s, user_id, prefs, day, now=moment)
-    out.system_fired += len(locks)
-    out.locks_started += len(locks)
+    sr1 = await system_rules.sr1_violations(s, user_id, prefs, day, now=moment)
+    out.system_fired += sr1.fired
+    out.locks_started += len(sr1.locks)
+    out.retro_checked += len(sr1.retro)
     if await system_rules.sr3_no_admission(s, user_id, prefs, day, now=moment):
         out.system_fired += 1
 

@@ -117,6 +117,7 @@ def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
     definition = sysrules.BY_CODE.get(row.system_code or "")
 
     consequence = definition.consequence if definition is not None else ""
+    tail = definition.tail if definition is not None else ""
     if is_system and definition is not None:
         if_text = definition.if_text(row.actions)
         summary = definition.summary(row.actions)
@@ -139,7 +140,9 @@ def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
         "actions": row.actions,
         "unlock": row.unlock,
         "if_text": if_text,
-        "human_text": human.sentence(if_text, row.actions, row.unlock, consequence),
+        "human_text": human.sentence(
+            if_text, row.actions, row.unlock, consequence, tail
+        ),
         "summary": summary,
         "fired_last_30d": fired_last_30d,
         "version": row.version,
@@ -360,6 +363,7 @@ def preview(
         checked_unlock = {key: bool(unlock.get(key)) for key in dic.UNLOCK_KEYS}
 
     consequence = definition.consequence if definition is not None else ""
+    tail = definition.tail if definition is not None else ""
     if definition is not None:
         if_text = definition.if_text(checked_actions)
         summary = definition.summary(checked_actions)
@@ -372,7 +376,7 @@ def preview(
     return {
         "if_text": if_text,
         "human_text": human.sentence(
-            if_text, checked_actions, checked_unlock, consequence
+            if_text, checked_actions, checked_unlock, consequence, tail
         ),
         "summary": summary,
         "valid": problem is None,

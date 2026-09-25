@@ -18,14 +18,13 @@
 потока, и из сверки, и повторный проход не должен ни задваивать инциденты,
 ни слать второй алерт.
 
+Ветка позднего тега живёт отдельно, в `app/retro.py`: у неё то же условие,
+но другой жизненный цикл — окна, которое можно соблюсти, уже нет, и остаётся
+только узнать, было ли оно соблюдено. Блокировки она не ставит ни в одной
+своей ветке (ТЗ 4.4).
+
 **Чего здесь сознательно нет:**
 
-- **Ретропроверки позднего тега.** Тег, поставленный после конца торгового дня
-  сделки, не делает ничего: ни блокировки на сегодня, ни разбора того дня,
-  ни пересчёта стрика. Это шаг 11. До него честнее не делать ничего, чем
-  включить сегодняшнюю блокировку за то, что случилось вчера, — ТЗ 4.4
-  говорит про этот случай прямо, и «блокировка не включается» там не
-  формальность, а способ не наказать дважды.
 - **Сигнала доверенному лицу.** SR-2 и SR-3 обязаны его послать (ТЗ 6.5), но
   контакта с двойным согласием не существует до шага 13. Алерт идёт в лог,
   и ни один экран про отправленный сигнал не говорит.
@@ -34,12 +33,15 @@
 import datetime as dt
 import logging
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import retro
+from eds.app.retro import RetroTag
 from eds.contracts.rules import Firing, OpenTrade
-from eds.contracts.trading_time import day_ends_at
+from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.daybook import questions
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.incidents import service as incidents
@@ -57,6 +59,26 @@ from eds.modules.trades import repo as trades_repo
 from eds.platform import auth
 
 log = logging.getLogger("eds.system_rules")
+
+
+@dataclass
+class Sr1Result:
+    """Чем кончился проход SR-1 по дню.
+
+    Два поля, потому что у SR-1 две взаимоисключающие ветки, и склеивать их
+    в одно число нельзя: блокировка — это то, что происходит сейчас,
+    ретропроверка — то, что выяснилось про прошлое. На приёмке спрашивают
+    про них по отдельности.
+    """
+
+    locks: list[LockRow] = field(default_factory=list)
+    # Тип импортирован именем, а не через модуль: поле называется так же,
+    # как модуль, и внутри тела класса `retro` — это уже поле.
+    retro: list[RetroTag] = field(default_factory=list)
+
+    @property
+    def fired(self) -> int:
+        return len(self.locks) + len(self.retro)
 
 
 async def _rule(
@@ -137,29 +159,43 @@ async def sr1_violations(
     day: dt.date,
     *,
     now: dt.datetime,
-) -> list[LockRow]:
-    """Сделка отмечена нарушением → инцидент и блокировка до конца её дня.
+    today: dt.date | None = None,
+) -> Sr1Result:
+    """Сделка отмечена нарушением → блокировка до конца её дня или ретропроверка.
 
     Блокировка принадлежит торговому дню сделки и держится до конца этого дня
     (ТЗ 4.4). Отсюда единственная проверка, которая здесь важна: **окно дня
     ещё открыто или уже закрылось.**
 
     Окно открыто — блокировка включается сразу, до границы дня, и compliance
-    идёт в реальном времени. Окно закрыто — не делаем ничего. Не «ничего
-    страшного», а буквально ничего: ни блокировки, ни инцидента. Разбор
-    такого тега — ретропроверка прошлого дня — это шаг 11, и записать
-    инцидент сейчас значило бы записать его без исхода, который может дать
-    только ретропроверка.
+    идёт в реальном времени. Окно закрыто — блокировки нет, и вместо неё идёт
+    ретропроверка того дня: были ли сделки после размеченной. Исход у неё
+    любой из двух, инцидент записывается в тот прошлый день, а серия
+    пересчитывается от него и до вчера (`app/retro.py`).
+
+    Одно и то же условие, две развязки — и держать их рядом важнее, чем
+    разложить по файлам: вопрос «а что будет, если тег придёт позже» задаётся
+    именно здесь, и ответ должен быть виден на этом же экране.
     """
     window_until = day_ends_at(day, prefs.timezone, prefs.day_cutoff)
-    if now >= window_until:
-        # Поздний тег. Шаг 11 разберёт этот день и пересчитает стрик;
-        # до тех пор молчим — и говорим об этом на экране правил.
-        return []
 
     rule = await _rule(s, user_id, sysrules.SR1)
     if rule is None:
-        return []
+        return Sr1Result()
+
+    if now >= window_until:
+        # Поздний тег: окно того дня истекло. Блокировки нет ни в одной ветке.
+        return Sr1Result(
+            retro=await retro.run(
+                s,
+                user_id,
+                prefs,
+                rule,
+                day,
+                now=now,
+                today=today or trading_day(now, prefs.timezone, prefs.day_cutoff),
+            )
+        )
 
     started: list[LockRow] = []
     for trade_id, symbol, open_time, close_time in await trades_repo.violations_of_day(
@@ -197,7 +233,7 @@ async def sr1_violations(
         if lock is not None:
             started.append(lock)
             log.info("SR-1: блокировка %s по сделке %s", lock.id, symbol)
-    return started
+    return Sr1Result(locks=started)
 
 
 # --- SR-2: сделка во время блокировки ---

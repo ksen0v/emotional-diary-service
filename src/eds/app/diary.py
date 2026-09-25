@@ -16,6 +16,8 @@ from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.incidents import repo as incidents_repo
+from eds.modules.rules import repo as rules_repo
 from eds.modules.streaks import rules as streak_rules
 from eds.modules.trades import repo as trades_repo
 from eds.modules.trades import service as trades_service
@@ -81,6 +83,11 @@ async def _day_items(
     summaries = await trades_repo.day_summaries(s, user_id, since, until)
     days = {row.day: row for row in await daybook_repo.days_in_range(s, user_id, since, until)}
     marks = await app_streaks.marks_in_range(s, user_id, since, until)
+    # Срабатывания и блокировки по дням. Спрашиваются здесь, одним запросом
+    # на диапазон: дневник читает месяц целиком, и запрос на клетку календаря
+    # был бы тридцатью запросами вместо двух.
+    fired = await rules_repo.fired_by_day(s, user_id, since, until)
+    locks = await incidents_repo.lock_counts(s, user_id, since, until)
 
     items: list[dict] = []
     day = since
@@ -102,7 +109,13 @@ async def _day_items(
                         entry, tags.get(entry.id, []), comments.get(entry.id, [])
                     )
                 ),
-                "facts": _day_facts(summary, row, marks.get(day)),
+                "facts": _day_facts(
+                    summary,
+                    row,
+                    marks.get(day),
+                    fired=fired.get(day, 0),
+                    locks=locks.get(day, (0, 0)),
+                ),
             }
         )
         day += dt.timedelta(days=1)
@@ -110,7 +123,14 @@ async def _day_items(
     return items
 
 
-def _day_facts(summary: dict | None, row, mark=None) -> dict:
+def _day_facts(
+    summary: dict | None,
+    row,
+    mark=None,
+    *,
+    fired: int = 0,
+    locks: tuple[int, int] = (0, 0),
+) -> dict:
     """Факты одного дня — то, что стоит рядом с записью и в клетке календаря."""
     trades = summary["trades"] if summary else 0
     unmarked = summary["unmarked"] if summary else 0
@@ -141,12 +161,14 @@ def _day_facts(summary: dict | None, row, mark=None) -> dict:
         "admission": row.admission if row else None,
         "check_score": row.check_score if row else None,
         "review_state": row.review_state if row else "none",
-        # Правила и блокировки появятся на шаге 9. Здесь честные нули,
-        # а не null: срабатываний действительно не было ни одного, потому что
-        # движка ещё нет, и это видно по нулям, а не по прочерку.
-        "rules_fired": 0,
-        "locks": 0,
-        "locks_kept": 0,
+        # Срабатывания правил и блокировки — настоящие, с шагов 9 и 10.
+        # До шага 11 здесь стояли нули с подписью «появятся на шаге 9»: шаги
+        # прошли, а нули остались, и дневник говорил «блокировок не было» за
+        # день, в котором блокировка была нарушена. Долг найден на шаге 11
+        # и закрыт здесь же — это ровно то, от чего лечился экран правил.
+        "rules_fired": fired,
+        "locks": locks[0],
+        "locks_kept": locks[1],
         # Зачёт дня и причина берутся из отметки стрика, а не пересчитываются
         # здесь заново: две копии одного правила разойдутся, и на экране
         # окажется одна причина, а в расчёте другая.
@@ -227,6 +249,8 @@ async def period_facts(
 
     marking = computed.as_dict()
     tags = await daybook_repo.tag_counts_in_range(s, user_id, since, until)
+    fired = await rules_repo.fired_by_day(s, user_id, since, until)
+    locks = await incidents_repo.lock_counts(s, user_id, since, until)
     return {
         "trades": totals["count"],
         "significant_trades": totals["significant_count"],
@@ -246,12 +270,14 @@ async def period_facts(
         "days_with_trades": len(summaries),
         # Ментальные теги периода со счётчиком дней (ТЗ 5.3).
         "tags": [{"tag": tag, "days": days} for tag, days in tags],
-        # Блокировки появятся на шаге 9. Нули честные: срабатываний не было,
-        # потому что движка нет. Compliance при нуле блокировок — 100%,
-        # и подпись «блокировок не было» не даёт принять это за измерение.
-        "locks": 0,
-        "locks_kept": 0,
-        "rules_fired": 0,
+        # Compliance блокировок (ТЗ 5.1) считается из этих двух чисел.
+        # Ноль блокировок по-прежнему даёт 100% — но теперь это правда про
+        # период без блокировок, а не про неработающий движок, и подпись
+        # «блокировок не было» стоит рядом, чтобы ноль не читался как
+        # измерение.
+        "locks": sum(count for count, _ in locks.values()),
+        "locks_kept": sum(kept for _, kept in locks.values()),
+        "rules_fired": sum(fired.values()),
         "counted_in_streak": None,
         "confidence": confidence,
     }

@@ -165,18 +165,27 @@ def sentence(
     actions: dict[str, Any],
     unlock: dict[str, Any],
     consequence: str = "",
+    tail: str = "",
 ) -> str:
     """Правило целиком одной фразой.
 
     `if_text` — то, что стоит после «Если»: у пользовательского правила это
     условия со связками, у системного — фиксированное описание из system.py,
     потому что его условие тремя показателями не выражается (Архитектура ч.1 §7).
+
+    `tail` — вторая развязка того же условия, если она у правила есть. Такая
+    развязка одна на весь сервис: у SR-1 тег в тот же день включает
+    блокировку, а тег после конца того дня — нет (ТЗ 4.4). Пока ретропроверки
+    не было, молчать об этом было честно: она ничего не делала. Теперь делает,
+    и фраза обязана её назвать — правило не может объявлять половину того,
+    что производит.
     """
     head = f"Если {if_text} — "
     parts = actions_phrase(actions, consequence)
     if not parts:
         return head + "ничего не произойдёт: у правила не выбрано ни одного действия."
-    return head + join_ru(parts) + "." + unlock_phrase(actions, unlock)
+    body = head + join_ru(parts) + "." + unlock_phrase(actions, unlock)
+    return f"{body} {tail}" if tail else body
 
 
 def summary(actions: dict[str, Any]) -> str:

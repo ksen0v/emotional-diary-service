@@ -212,11 +212,14 @@ async def test_week_facts_carry_the_metrics_from_the_spec(app_client) -> None:
     assert facts["violations_profitable"] == 1
     # Сделки были, а чек не проходился — день считается без допуска (ТЗ 5.2).
     assert facts["days_without_admission"] == 1
-    # Блокировок нет не потому, что «не считаем», а потому что движка ещё нет:
-    # честные нули, по которым видно, что срабатываний не было (шаг 9).
+    # Блокировки и срабатывания — настоящие, а не нули-заглушки (шаг 11).
+    # Здесь сработал SR-3: сделки есть, чек не проходился. Блокировки он не
+    # ставит (ТЗ 5.2 и 6.5), поэтому срабатывание есть, а блокировок нет —
+    # и Compliance при нуле блокировок остаётся 100% с подписью
+    # «блокировок не было», а не выдаёт себя за измерение.
+    assert facts["rules_fired"] >= 1
     assert facts["locks"] == 0
     assert facts["locks_kept"] == 0
-    assert facts["rules_fired"] == 0
 
 
 async def test_week_entry_snaps_to_monday(app_client) -> None:

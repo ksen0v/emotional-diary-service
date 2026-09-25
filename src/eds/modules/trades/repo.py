@@ -375,3 +375,36 @@ async def unmarked_closed_before(
         .order_by(Trade.close_time, Trade.id)
     )
     return [(row[0], row[1], row[2]) for row in res]
+
+
+async def opened_after_in_day(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date, moment: dt.datetime
+) -> list[tuple[uuid.UUID, str, dt.datetime]]:
+    """Сделки того же торгового дня, ОТКРЫТЫЕ позже момента. Вход ретропроверки.
+
+    Окно ретропроверки — от закрытия размеченной сделки до границы её
+    торгового дня (ТЗ 4.4), поэтому границы у выборки две, и обе важны:
+
+    - `trading_day == day` держит окно внутри дня сделки. Верхняя граница
+      окна — это конец дня, и выражать её временем значило бы посчитать её
+      второй раз, уже из таймзоны, в которой она однажды уже посчиталась при
+      приёме сделки. Торговый день сделки фиксируется при приёме и больше
+      не меняется (ТЗ 9.4) — значит он и есть окно.
+    - `open_time > moment` строго больше: сделка, открытая ровно в момент
+      закрытия предыдущей, открыта не после неё, а вместе с ней, и вешать
+      на неё нарушение было бы придиркой к секунде.
+
+    Именно открытые, а не закрытые: то же правило, что у compliance-проверки
+    (Архитектура ч.1 §7). Сделка, открытая до тега и закрытая после, торговлей
+    «после несистемной сделки» не является.
+    """
+    res = await s.execute(
+        select(Trade.id, Trade.symbol, Trade.open_time)
+        .where(
+            Trade.user_id == user_id,
+            Trade.trading_day == day,
+            Trade.open_time > moment,
+        )
+        .order_by(Trade.open_time, Trade.id)
+    )
+    return [(row[0], row[1], row[2]) for row in res]

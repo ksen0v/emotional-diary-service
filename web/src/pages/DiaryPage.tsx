@@ -657,7 +657,9 @@ function DayRows({
       <Row
         label="Блокировок"
         value={String(facts.locks)}
-        opts={{ sub: facts.locks > 0 ? `${facts.locks_kept} соблюдено` : 'шаг 9' }}
+        opts={{
+          sub: facts.locks > 0 ? `${facts.locks_kept} соблюдено` : 'блокировок не было',
+        }}
       />
       <Row
         label="Разбор"

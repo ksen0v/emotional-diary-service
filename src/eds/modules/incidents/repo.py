@@ -241,3 +241,39 @@ async def locks_of(
         )
     )
     return {row.incident_id: row for row in res.scalars()}
+
+
+async def lock_counts(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.date, until: dt.date
+) -> dict[dt.date, tuple[int, int]]:
+    """Блокировки по дням: сколько закончившихся и сколько из них соблюдено.
+
+    Считается по **исходу инцидента**, а не по состоянию блокировки, и это
+    не деталь. Нарушенная блокировка остаётся активной до границы дня — экран
+    блокировки не снимается в наказание за нарушение, — поэтому по состоянию
+    она выглядела бы как «ещё идёт», и день с нарушенной блокировкой показал
+    бы в дневнике «блокировок не было». Исход же известен сразу: сделка внутри
+    окна закрывает инцидент как `нарушено`.
+
+    В счёт входят только **закончившиеся** инциденты: у идущего исход ещё
+    не известен, и посчитать его соблюдённым заранее значило бы завысить
+    меру дисциплины (ТЗ 5.1). Это то же правило, по которому считается
+    `discipline_pct` в ленте инцидентов, — и считать его двумя способами
+    в двух местах нельзя, иначе дневник и лента разойдутся в числах.
+    """
+    res = await s.execute(
+        select(
+            LockRow.day,
+            func.count(),
+            func.count().filter(IncidentRow.outcome == KEPT),
+        )
+        .join(IncidentRow, IncidentRow.id == LockRow.incident_id)
+        .where(
+            LockRow.user_id == user_id,
+            LockRow.day >= since,
+            LockRow.day <= until,
+            IncidentRow.outcome != OPEN,
+        )
+        .group_by(LockRow.day)
+    )
+    return {row[0]: (row[1], row[2]) for row in res}

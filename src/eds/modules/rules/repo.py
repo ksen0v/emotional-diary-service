@@ -158,9 +158,10 @@ async def mark_deleted(s: AsyncSession, row: RuleRow) -> None:
 async def active_user_rules(s: AsyncSession, user_id: uuid.UUID) -> list[RuleRow]:
     """Правила, которые движок проверяет по счётчикам дня.
 
-    Только пользовательские: у системных условий в базе нет, они в коде
-    обработчика и появятся на шаге 10. Выключенные не проверяются, удалённые
-    тоже — но из базы не исчезают, на них ссылаются инциденты.
+    Только пользовательские: у системных условий в базе нет, они живут в коде
+    обработчика (`app/system_rules.py` и `app/retro.py`). Выключенные не
+    проверяются, удалённые тоже — но из базы не исчезают, на них ссылаются
+    инциденты.
     """
     res = await s.execute(
         select(RuleRow).where(
@@ -272,5 +273,27 @@ async def fired_counts(
             EvaluationRow.fired.is_(True),
         )
         .group_by(EvaluationRow.rule_id)
+    )
+    return {row[0]: row[1] for row in res}
+
+
+async def fired_by_day(
+    s: AsyncSession, user_id: uuid.UUID, since: dt.date, until: dt.date
+) -> dict[dt.date, int]:
+    """Сколько срабатываний в каждом дне диапазона. Для дневника.
+
+    По дням, а не по правилам: в дневнике рядом с записью стоит вопрос
+    «сколько раз за этот день сервис меня остановил», и ответ на него не
+    зависит от того, какое именно правило сработало.
+    """
+    res = await s.execute(
+        select(EvaluationRow.day, func.count())
+        .where(
+            EvaluationRow.user_id == user_id,
+            EvaluationRow.day >= since,
+            EvaluationRow.day <= until,
+            EvaluationRow.fired.is_(True),
+        )
+        .group_by(EvaluationRow.day)
     )
     return {row[0]: row[1] for row in res}
