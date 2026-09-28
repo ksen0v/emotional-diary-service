@@ -346,7 +346,10 @@ export function TradesPage() {
         style={{ padding: '4px 0', flexGrow: 1, minHeight: 0, overflowY: 'auto' }}
       >
         {feed.isLoading && <div className="hint" style={{ padding: 16 }}>загрузка…</div>}
-        {!feed.isLoading && items.length === 0 && (
+        {/* «Сделок нет» считается по обоим спискам. Пока считалось по одному
+            закрытому, экран умудрялся написать «сделок за период нет» прямо
+            над идущей сделкой — то есть соврать, глядя на неё. */}
+        {!feed.isLoading && items.length === 0 && openItems.length === 0 && (
           <div className="hint" style={{ padding: 16 }}>
             {filter === 'violations'
               ? 'Нарушений за период нет. Нарушением становится сделка, которую ты '
@@ -394,9 +397,9 @@ export function TradesPage() {
             busy={mark.isPending}
           />
         ))}
-        {openItems.length > 0 && items.length > 0 && (
+        {openItems.length > 0 && !feed.isLoading && (
           <div className="klabel" style={{ padding: '14px 18px 6px' }}>
-            Закрытые
+            {items.length > 0 ? 'Закрытые' : 'Закрытых за период нет'}
           </div>
         )}
         {items.map((trade) => (
