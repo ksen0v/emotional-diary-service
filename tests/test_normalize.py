@@ -1,6 +1,7 @@
 """Чистые функции приёма. Каждое решение из архитектуры — отдельным тестом."""
 
 import datetime as dt
+from dataclasses import replace
 from decimal import Decimal
 
 from eds.contracts.source import IncomingTag
@@ -183,8 +184,13 @@ async def test_ingest_skips_trades_before_ingest_from() -> None:
     assert report.skipped_before_ingest_from == 2
 
 
-async def test_ingest_skips_open_positions() -> None:
-    """Открытые позиции в MVP не принимаем (ТЗ 4.5, решение ОВ-3)."""
+async def test_ingest_takes_open_positions_regardless_of_the_start_mark() -> None:
+    """Открытая позиция принимается, даже если открыта раньше подключения.
+
+    Это не дыра в правиле «историю не импортируем» (ТЗ 4.1): открытая позиция —
+    не история, а то, что происходит прямо сейчас, и трейдер видит её
+    в терминале в эту же секунду. Решение от 25.09, ТЗ 4.5.
+    """
     import uuid
 
     from eds.contracts.ingest import IngestContext
@@ -214,6 +220,53 @@ async def test_ingest_skips_open_positions() -> None:
         is_open=True,
     )
 
-    report = await ingest_batch(None, ctx, [open_trade])
-    assert report.skipped_open == 1
-    assert report.inserted == 0
+    # Позиция открыта за три недели до точки отсчёта — и всё равно принимается.
+    early = replace(open_trade, open_time=utc(2026, 8, 10, 10, 0))
+
+    class Recorder:
+        """Приём проверяем без базы: интересует решение, а не запись."""
+
+        def __init__(self) -> None:
+            self.added: list = []
+
+        async def flush(self) -> None: ...
+
+        def add(self, row) -> None:
+            self.added.append(row)
+
+    import eds.modules.trades.service as service_module
+
+    seen: list = []
+
+    async def fake_insert(_s, trade, _tags):
+        seen.append(trade)
+
+    async def fake_by_external(*_args, **_kwargs):
+        return None
+
+    async def fake_publish(*_args, **_kwargs):
+        return 1
+
+    original = (
+        service_module.repo.insert,
+        service_module.repo.by_external,
+        service_module.bus.publish,
+    )
+    service_module.repo.insert = fake_insert
+    service_module.repo.by_external = fake_by_external
+    service_module.bus.publish = fake_publish
+    try:
+        report = await ingest_batch(Recorder(), ctx, [early])
+    finally:
+        (
+            service_module.repo.insert,
+            service_module.repo.by_external,
+            service_module.bus.publish,
+        ) = original
+
+    assert report.opened == 1
+    assert report.skipped_before_ingest_from == 0
+    assert seen[0].is_open is True
+    assert seen[0].close_time is None
+    # В счётчики дня открытая сделка не идёт: движок её дня не касается.
+    assert report.touched_days == set()

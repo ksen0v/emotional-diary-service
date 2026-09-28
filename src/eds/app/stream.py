@@ -50,6 +50,27 @@ class BinanceStream:
         if self._stream is not None:
             self._stream.stop()
 
+    def transport_state(self) -> dict:
+        """Состояние самого WebSocket, а не обёртки над ним."""
+        stream = self._stream
+        if stream is None:
+            return {
+                "connected": False,
+                "reconnects": 0,
+                "opened_at": None,
+                "last_event_at": None,
+                "last_error": "соединение ещё не поднималось",
+            }
+        return {
+            "connected": stream.connected,
+            "reconnects": stream.reconnects,
+            "opened_at": stream.opened_at.isoformat() if stream.opened_at else None,
+            "last_event_at": (
+                stream.last_event_at.isoformat() if stream.last_event_at else None
+            ),
+            "last_error": stream.last_error,
+        }
+
     async def run(self) -> None:
         while not self._stop.is_set():
             try:
@@ -132,6 +153,10 @@ class BinanceStream:
             engine_report = await pipeline.engine.after_ingest(
                 s, self.user_id, prefs, sorted(report.touched_days)
             )
+            # Строка открытой сделки в ленте двигается отсюда же: исполнение
+            # меняет объём и средний вход, и ждать минутного опроса позиций
+            # ради этого незачем.
+            await pipeline.push_open_trades(s, self.user_id)
             await s.commit()
 
         self.fills_applied += 1
@@ -190,12 +215,48 @@ class StreamRegistry:
         for connection_id in list(self._running):
             await self._stop_one(connection_id)
 
+    def owner_of(self, connection_id: str) -> uuid.UUID | None:
+        """Чей это поток. Нужно, чтобы состояние связи ушло нужным вкладкам."""
+        for ident, (stream, _task) in self._running.items():
+            if str(ident) == connection_id:
+                return stream.user_id
+        return None
+
+    def running(self) -> int:
+        return len(self._running)
+
+    def state_of(self, connection_id: uuid.UUID) -> dict | None:
+        """Состояние потока одного подключения, если он вообще поднят."""
+        for row in self.state():
+            if row["connection_id"] == str(connection_id):
+                return row
+        return None
+
     def state(self) -> list[dict]:
-        return [
-            {
-                "connection_id": str(connection_id),
-                "fills_applied": stream.fills_applied,
-                "last_error": stream.last_error,
-            }
-            for connection_id, (stream, _task) in self._running.items()
-        ]
+        """Что на самом деле с потоком.
+
+        `last_error` самого потока — не показатель: обрывы соединения ловятся
+        внутри транспорта и наружу не всплывают. Поэтому сюда идёт состояние
+        WebSocket, а не только то, упал ли обработчик. Иначе молчащий полчаса
+        поток выглядит ровно как работающий — и первая живая проверка
+        Binance это доказала.
+        """
+        out: list[dict] = []
+        for connection_id, (stream, _task) in self._running.items():
+            transport = stream.transport_state()
+            out.append(
+                {
+                    "connection_id": str(connection_id),
+                    "fills_applied": stream.fills_applied,
+                    "last_error": stream.last_error or transport["last_error"],
+                    **transport,
+                }
+            )
+        return out
+
+
+# Единственный реестр процесса. Модульный синглтон по той же причине, что
+# и хаб подписок в `ui_stream`: писать в него нужно из двух мест — расписания
+# и консьюмера «подключение изменилось», — а передавать его через полпроцесса
+# только ради второго значило бы протащить реестр в подпись каждой функции.
+registry = StreamRegistry()

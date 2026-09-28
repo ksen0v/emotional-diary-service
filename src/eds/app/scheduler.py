@@ -23,7 +23,7 @@ import contextlib
 import datetime as dt
 import logging
 
-from eds.app import pipeline
+from eds.app import pipeline, stream, ui_stream
 from eds.app.stream import StreamRegistry
 from eds.modules.source import repo as source_repo
 from eds.platform.db import session_factory
@@ -33,9 +33,17 @@ log = logging.getLogger("eds.scheduler")
 
 # Сверка — страховка от потерянного события потока (Архитектура ч.1 §5.6).
 RECONCILE_SEC = 10 * 60
-# Позиции — раз в минуту при открытой сессии. Чаще незачем: правило на
-# просадку с открытой позицией измеряется процентами депозита, а не секундами.
-POSITIONS_SEC = 60
+# Позиции — раз в пятнадцать секунд. Здесь была минута, и для правил её
+# хватало: просадка с открытой позицией измеряется процентами депозита,
+# а не секундами. Но с живой строкой в ленте минута стала видна — число
+# в строке стоит неподвижно, пока трейдер на него смотрит, и «в прямом эфире»
+# превращается в «иногда».
+#
+# Пятнадцать секунд стоят дёшево: `positionRisk` и `balance` — по 5 единиц
+# веса, то есть 40 в минуту из 2400 разрешённых. Дальше сокращать бессмысленно
+# — по-настоящему живой ценой это станет только от потока `markPrice`,
+# и это отдельная работа с отдельным решением (вопрос к трейдеру в README).
+POSITIONS_SEC = 15
 # Пересмотр списка потоков: подключение могло появиться или смениться.
 STREAMS_SEC = 60
 
@@ -45,7 +53,10 @@ class Scheduler:
     свою ошибку: упавшая сверка не должна уносить с собой поток."""
 
     def __init__(self, streams: StreamRegistry | None = None):
-        self.streams = streams or StreamRegistry()
+        # По умолчанию — реестр процесса, а не свой: консьюмер «подключение
+        # изменилось» поднимает поток сразу, и поднимать он должен тот же
+        # реестр, за которым потом присматривает расписание.
+        self.streams = streams or stream.registry
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self.runs: dict[str, int] = {"reconcile": 0, "positions": 0, "streams": 0}
@@ -94,6 +105,13 @@ class Scheduler:
 
     async def _refresh_streams(self) -> None:
         await self.streams.sync_with_db()
+        # Состояние связи уходит на открытые вкладки. Раньше о молчащем потоке
+        # нельзя было узнать вообще: обрывы ловятся внутри транспорта, и поток,
+        # не поднявшийся ни разу, выглядел ровно как работающий.
+        for row in self.streams.state():
+            owner = self.streams.owner_of(row["connection_id"])
+            if owner is not None:
+                ui_stream.push_sync_state(owner, row)
 
     async def _reconcile_all(self) -> None:
         """Сверка по каждому активному сетевому источнику.

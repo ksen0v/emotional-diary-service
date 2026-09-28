@@ -16,6 +16,7 @@ import pytest
 import respx
 from sqlalchemy import text
 
+from eds.contracts import events as ev
 from eds.modules.source import repo as source_repo
 from eds.modules.source.adapters.binance import mapping
 from eds.modules.source.adapters.binance.source import BinanceSource
@@ -27,6 +28,7 @@ from tests.test_binance_connect import (
     ms,
 )
 from tests.test_identity import csrf, register
+from tests.test_trades_flow import consumer_named
 
 pytestmark = pytest.mark.usefixtures("clean_users")
 
@@ -218,3 +220,59 @@ async def test_sync_keeps_a_balance_snapshot(app_client, factory) -> None:
         latest = await source_repo.latest_balance(s, connection_id)
     assert latest is not None
     assert str(latest.wallet_usdt) == BALANCE[0]["balance"] + ".0000000000"
+
+
+@respx.mock
+async def test_connecting_asks_for_the_stream_at_once(app_client, factory) -> None:
+    """Поток поднимается по событию, а не в следующий обход расписания.
+
+    Первая живая проверка Binance попала ровно в эту щель: трейдер вставил
+    ключ, сразу открыл и закрыл сделку, а список подключений расписание
+    пересматривает раз в минуту — потока в тот момент ещё не было, и сделку
+    принесла только сверка по кнопке.
+    """
+    connection_id, user_id = await connected(app_client, factory)
+
+    async with factory() as s:
+        res = await s.execute(
+            text(
+                "SELECT payload->>'reason' FROM events.outbox "
+                "WHERE event_type = :type AND payload->>'user_id' = :uid "
+                "ORDER BY id"
+            ),
+            {"type": ev.SOURCE_CONNECTION_CHANGED, "uid": str(user_id)},
+        )
+        reasons = [row[0] for row in res]
+
+    assert reasons == ["connected"]
+    # Слушатель у события есть: без него оно было бы записью в журнале,
+    # а не подъёмом потока.
+    assert consumer_named("streams_on_connection") is not None
+    assert str(connection_id)
+
+
+@respx.mock
+async def test_removing_a_connection_asks_to_drop_the_stream(
+    app_client, factory
+) -> None:
+    """Снятие так же срочно, как подъём: отозванный ключ не должен стучаться."""
+    connection_id, user_id = await connected(app_client, factory)
+
+    res = await app_client.delete(
+        f"/api/v1/source/connections/{connection_id}",
+        headers=csrf(app_client),
+    )
+    assert res.status_code in (200, 204)
+
+    async with factory() as s:
+        rows = await s.execute(
+            text(
+                "SELECT payload->>'reason' FROM events.outbox "
+                "WHERE event_type = :type AND payload->>'user_id' = :uid "
+                "ORDER BY id"
+            ),
+            {"type": ev.SOURCE_CONNECTION_CHANGED, "uid": str(user_id)},
+        )
+        reasons = [row[0] for row in rows]
+
+    assert reasons == ["connected", "deleted"]

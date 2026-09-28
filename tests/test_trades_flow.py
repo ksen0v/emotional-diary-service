@@ -64,6 +64,18 @@ async def drain(consumer: bus.Consumer) -> None:
             return
 
 
+def consumer_named(name: str) -> bus.Consumer:
+    """Настоящий консьюмер из регистрации, по имени.
+
+    По имени, а не по позиции в списке: порядок регистрации — не контракт,
+    и новый консьюдер во главе списка однажды уже увёл три теста в красное.
+    """
+    for consumer in all_consumers():
+        if consumer.name == name:
+            return consumer
+    raise AssertionError(f"консьюмер {name} не зарегистрирован")
+
+
 async def sync(client: httpx.AsyncClient) -> dict:
     res = await client.post("/api/v1/sync", headers=csrf(client))
     assert res.status_code == 200, res.text
@@ -152,7 +164,7 @@ async def test_violation_tag_remarks_existing_trades(app_client: httpx.AsyncClie
     # Консьюмер в тесте запускаем вручную: в приложении он работает фоном.
     # Берём настоящий из регистрации, а не собираем копию: копия не знала бы
     # про фильтр по типу события и спотыкалась бы на чужих событиях.
-    await drain(all_consumers()[0])
+    await drain(consumer_named("remark_on_tags"))
 
     body = await feed(app_client)
     assert body["items"][0]["marking"] == "violation"

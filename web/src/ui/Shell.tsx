@@ -4,6 +4,7 @@ import { useSetMe } from '../lib/auth'
 import { useToday } from '../pages/TodayPage'
 import type { Me, Today } from '../lib/types'
 import { LockedScreen } from './LockedScreen'
+import { LiveProvider, useLive } from '../lib/stream'
 import { ago, dateTime, plural } from './format'
 
 // Каркас интерфейса из дизайна: сайдбар на семь пунктов и топ-бар.
@@ -33,6 +34,10 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
   }
 
   return (
+    // Одно живое соединение на приложение поднимается здесь: топ-бару нужно
+    // состояние потока, ленте — числа открытых сделок, и оба должны видеть
+    // одно и то же.
+    <LiveProvider enabled>
     <div style={{ display: 'flex', height: '100vh' }}>
       <nav
         style={{
@@ -140,6 +145,7 @@ export function Shell({ me, children }: { me: Me; children: React.ReactNode }) {
           условие не выполнено (Дизайн §1). */}
       {today.data?.state === 'locked' && <LockedScreen today={today.data} />}
     </div>
+    </LiveProvider>
   )
 }
 
@@ -189,27 +195,75 @@ function Streak({ today }: { today: Today | undefined }) {
   )
 }
 
+/**
+ * «Синк» в топ-баре: слышим ли мы источник прямо сейчас.
+ *
+ * Раньше здесь показывалось время последней сверки, и этого было мало. Поток,
+ * не поднявшийся ни разу, выглядел точно так же, как рабочий: сверка-то
+ * проходила. Первая живая проверка Binance на этом и споткнулась — экран
+ * молчал о том, что защиты нет.
+ *
+ * Обратная ошибка тоже названа: тишина живого потока не повод для тревоги.
+ * Трейдер не торгует непрерывно, и «нет событий десять минут» при открытом
+ * соединении означает «сделок не было», а не «связь пропала».
+ */
 function Sync({ today }: { today: Today | undefined }) {
   const source = today?.source
   if (!source) {
     return <span style={{ fontSize: 13, color: 'var(--faint)' }}>Синк нет источника</span>
   }
-  // Если синк умер, защиты нет — это должно быть заметно, поэтому ошибка
-  // показывается цветом, а не мелким текстом.
+  const live = useLive()
+  const stream = source.stream
+  const shown = stream?.expected
+    ? stream.connected
+      ? { text: 'поток открыт', color: 'var(--dim)' }
+      : { text: 'потока нет', color: 'var(--bad)' }
+    : source.stale
+      ? { text: 'ошибка', color: 'var(--bad)' }
+      : {
+          text: source.last_event_at ? ago(source.last_event_at) : 'ещё не было',
+          color: 'var(--dim)',
+        }
   return (
     <span
-      style={{ fontSize: 13, color: source.stale ? 'var(--bad)' : 'var(--dim)' }}
-      title={source.last_event_at ? `последняя сверка ${dateTime(source.last_event_at)}` : ''}
+      style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}
+      title={syncTitle(source)}
     >
-      Синк{' '}
-      <span className="mono">
-        {source.stale
-          ? 'ошибка'
-          : source.last_event_at
-            ? ago(source.last_event_at)
-            : 'ещё не было'}
+      <span style={{ color: shown.color }}>
+        Синк <span className="mono">{shown.text}</span>
       </span>
+      {/* Вкладок больше лимита — эта обновляется опросом. Не ошибка, поэтому
+          и сказано спокойно: экран рабочий, просто узнаёт на пару секунд
+          позже (Архитектура ч.2 §6, решение 2). */}
+      {live.polling && (
+        <span
+          className="hint"
+          title="Живое соединение недоступно: экран обновляется опросом"
+        >
+          опросом
+        </span>
+      )}
     </span>
   )
+}
+
+function syncTitle(source: NonNullable<Today['source']>): string {
+  const lines: string[] = []
+  if (source.last_event_at) {
+    lines.push(`последняя сверка ${dateTime(source.last_event_at)}`)
+  }
+  const stream = source.stream
+  if (stream?.expected) {
+    lines.push(
+      stream.connected
+        ? `соединение с ${stream.opened_at ? dateTime(stream.opened_at) : 'неизвестно когда'}`
+        : stream.last_error || 'соединение не поднято',
+    )
+    if (stream.last_event_at) {
+      lines.push(`последнее событие ${dateTime(stream.last_event_at)}`)
+    }
+    if (stream.reconnects) lines.push(`переподключений ${stream.reconnects}`)
+  }
+  return lines.join('\n')
 }
 

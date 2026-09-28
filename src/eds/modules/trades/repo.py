@@ -60,8 +60,22 @@ async def tags_of(s: AsyncSession, trade_ids: list[uuid.UUID]) -> dict[uuid.UUID
     return grouped
 
 
-def _filtered(user_id: uuid.UUID, days: tuple[dt.date, dt.date] | None, marking: str | None):
+def _filtered(
+    user_id: uuid.UUID,
+    days: tuple[dt.date, dt.date] | None,
+    marking: str | None,
+    *,
+    closed_only: bool = True,
+):
+    """Выборка сделок под ленту и метрики.
+
+    По умолчанию только закрытые. Открытая сделка видна в ленте, но в числах
+    не участвует (ТЗ 4.5, решение от 25.09): её результат ещё меняется,
+    и покрытие, дисциплина и цена эмоций ездили бы вместе с ценой.
+    """
     query = select(Trade).where(Trade.user_id == user_id)
+    if closed_only:
+        query = query.where(Trade.is_open.is_(False))
     if days is not None:
         query = query.where(Trade.trading_day >= days[0], Trade.trading_day <= days[1])
     if marking == "unmarked":
@@ -92,6 +106,24 @@ async def page(
     return list(res.scalars())
 
 
+async def open_trades(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    days: tuple[dt.date, dt.date] | None = None,
+) -> list[Trade]:
+    """Сделки, которые идут прямо сейчас.
+
+    Отдаются отдельным списком, а не вместе со страницей: у открытой сделки
+    нет времени закрытия, а курсор ленты сортирует именно по нему. Их всегда
+    единицы, поэтому страница им не нужна.
+    """
+    query = select(Trade).where(Trade.user_id == user_id, Trade.is_open.is_(True))
+    if days is not None:
+        query = query.where(Trade.trading_day >= days[0], Trade.trading_day <= days[1])
+    res = await s.execute(query.order_by(Trade.open_time.desc()))
+    return list(res.scalars())
+
+
 async def totals(
     s: AsyncSession,
     user_id: uuid.UUID,
@@ -117,7 +149,17 @@ async def totals(
     count, profit, ret, significant, violations, unmarked = res.one()
     marked = count - unmarked
     coverage = (Decimal(marked) / Decimal(count) * 100) if count else Decimal("0")
+    # Открытые считаются отдельным числом и рядом же показываются: иначе
+    # «Сделок 9» над десятью строками читалось бы как ошибка сервиса.
+    open_count = await s.execute(
+        select(func.count()).select_from(
+            _filtered(user_id, days, marking, closed_only=False)
+            .where(Trade.is_open.is_(True))
+            .subquery()
+        )
+    )
     return {
+        "open_count": open_count.scalar_one(),
         "count": count,
         "significant_count": significant,
         "violations_count": violations,
@@ -348,6 +390,10 @@ async def violations_of_day(
             Trade.user_id == user_id,
             Trade.trading_day == day,
             Trade.marking == "violation",
+            # Открытую сделку SR-1 не трогает: отметку на ней трейдер ставит
+            # сразу, а инцидент неудаляем — записывать его по сделке
+            # с неизвестным результатом нельзя (ТЗ 4.5, решение от 25.09).
+            Trade.is_open.is_(False),
         )
         .order_by(Trade.close_time, Trade.id)
     )

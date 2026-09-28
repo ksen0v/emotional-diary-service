@@ -106,6 +106,19 @@ class FakeSource:
         return [_from_payload(row.payload) for row in rows.scalars()]
 
 
+    async def fetch_open_trades(
+        self, positions: list[SourcePosition] | None = None
+    ) -> list[IncomingTrade]:
+        """Открытые сделки из фейковой ленты: те, у кого в payload `is_open`."""
+        res = await self._s.execute(
+            select(FakeFeedItem).where(FakeFeedItem.connection_id == self._connection_id)
+        )
+        return [
+            _from_payload(row.payload)
+            for row in res.scalars()
+            if row.payload.get("is_open")
+        ]
+
     async def fetch_positions(self) -> list[SourcePosition]:
         """Открытые позиции, поданные через dev-панель.
 

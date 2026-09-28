@@ -447,3 +447,108 @@ async def test_ordinary_recompute_does_not_wipe_the_open_position(
     await app_client.post("/api/v1/sync", headers=csrf(app_client))
     third = (await app_client.get("/api/v1/today")).json()["counters"]
     assert third["unrealized_pct"] == "-0.75"
+
+
+@respx.mock
+async def test_open_position_lives_in_the_feed_and_closes_into_an_incident(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Полный путь открытой сделки: появилась, обновилась, размечена, закрылась.
+
+    Главная проверка решения от 25.09. Отметка на открытой сделке ставится
+    сразу и видна, а инцидент и блокировка появляются в момент закрытия:
+    инцидент неудаляем, и записывать его по сделке с неизвестным результатом
+    нельзя. До закрытия сделка не участвует ни в счётчиках дня, ни в покрытии.
+    """
+    await register(app_client)
+
+    at = dt.datetime.now(dt.UTC)
+    entry = [
+        {
+            "symbol": "BTCUSDT",
+            "id": 2001,
+            "orderId": 20010,
+            "side": "BUY",
+            "positionSide": "BOTH",
+            "price": "64000",
+            "qty": "0.2",
+            "realizedPnl": "0",
+            "commission": "0.5",
+            "commissionAsset": "USDT",
+            "time": ms(at),
+        }
+    ]
+    position = [
+        {
+            "symbol": "BTCUSDT",
+            "positionSide": "BOTH",
+            "positionAmt": "0.2",
+            "entryPrice": "64000",
+            "markPrice": "63500",
+            "unRealizedProfit": "-100.0",
+            "liquidationPrice": "50000",
+        }
+    ]
+    mock_binance(fills=entry, positions=position)
+    await connect(app_client)
+    await app_client.post("/api/v1/sync", headers=csrf(app_client))
+
+    feed = (await app_client.get("/api/v1/trades?period=month")).json()
+    assert feed["totals"]["open_count"] == 1
+    # В числах ленты открытая не участвует: там пока ничего не закрылось.
+    assert feed["totals"]["count"] == 0
+    live = feed["open_items"][0]
+    assert live["is_open"] is True
+    assert live["close_time"] is None
+    # −100 нереализованного минус полдоллара комиссии входа.
+    assert live["profit_usd"] == "-100.50"
+
+    # Счётчики дня её не видят.
+    counters = (await app_client.get("/api/v1/today")).json()["counters"]
+    assert counters["all_trades"] == 0
+
+    # Размечаем, пока позиция ещё открыта.
+    marked = await app_client.put(
+        f"/api/v1/trades/{live['id']}/marking",
+        headers=csrf(app_client),
+        json={"marking": "violation"},
+    )
+    assert marked.status_code == 200, marked.text
+    effects = marked.json()["effects"]
+    assert effects["pending_until_close"] is True
+    assert effects["incident_opened"] is None
+    assert effects["lock_started"] is None
+
+    # Позиция закрывается: тот же ключ сделки, теперь с результатом.
+    closing = entry + [
+        {
+            "symbol": "BTCUSDT",
+            "id": 2002,
+            "orderId": 20020,
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "price": "63400",
+            "qty": "0.2",
+            "realizedPnl": "-120.0",
+            "commission": "0.5",
+            "commissionAsset": "USDT",
+            "time": ms(dt.datetime.now(dt.UTC)),
+        }
+    ]
+    mock_binance(fills=closing, positions=[])
+    report = (await app_client.post("/api/v1/sync", headers=csrf(app_client))).json()
+    assert report["closed"] == 1
+
+    after = (await app_client.get("/api/v1/trades?period=month")).json()
+    assert after["totals"]["open_count"] == 0
+    assert after["totals"]["count"] == 1
+    closed = after["items"][0]
+    # Строка не задвоилась: ключ сделки собран из первого филла позиции.
+    assert closed["id"] == live["id"]
+    assert closed["is_open"] is False
+    assert closed["marking"] == "violation"
+
+    # И только теперь SR-1 записал инцидент и включил блокировку.
+    today = (await app_client.get("/api/v1/today")).json()
+    assert today["counters"]["all_trades"] == 1
+    assert today["lock"] is not None

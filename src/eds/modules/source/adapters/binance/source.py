@@ -32,6 +32,7 @@ from eds.modules.source.adapters.binance.aggregate import (
     AggregatedTrade,
     Fill,
     IncomeRow,
+    OpenPosition,
     aggregate,
     apply_funding,
     return_pct,
@@ -107,6 +108,7 @@ class BinanceSource:
             provides_positions=True,
             provides_balance=True,
             needs_aggregation=True,
+            provides_stream=True,
             history_depth="days:90",
         )
 
@@ -243,6 +245,81 @@ class BinanceSource:
 
         trades = await self._rebuild(inserted)
         return trades
+
+    async def fetch_open_trades(
+        self, positions: list[SourcePosition] | None = None
+    ) -> list[IncomingTrade]:
+        """Незакрытые позиции как сделки, идущие прямо сейчас.
+
+        Собираются из двух источников: `aggregate_state.open_position` знает,
+        когда позиция открылась, каким объёмом и что по ней уже реализовано,
+        а `positions` — сколько по ней нереализованного прямо сейчас.
+
+        Ключ сделки тот же, что получит закрытая: он собран из первого филла
+        позиции. Поэтому в момент закрытия строка в ленте не задваивается,
+        а превращается в закрытую сделку — ту же самую.
+        """
+        if self._s is None or self._connection_id is None:
+            return []
+        from eds.modules.source import repo
+
+        states = await repo.aggregate_states(self._s, self._connection_id)
+        # Цену спрашиваем у биржи, если её не передали: строка открытой сделки
+        # без свежего нереализованного — это замершая строка, и она хуже,
+        # чем её отсутствие.
+        fresh = positions if positions is not None else await self.fetch_positions()
+        live = {(row.symbol, row.position_side): row for row in fresh}
+
+        out: list[IncomingTrade] = []
+        for key, state in states.items():
+            raw = state.open_position
+            if not raw:
+                continue
+            position = OpenPosition.from_dict(raw)
+            row = live.get(key)
+            if row is None:
+                # Позиции на бирже уже нет, а состояние ещё не пересобрано.
+                # Показывать такую строку нельзя: она замерла бы навсегда.
+                continue
+            unrealized = row.unrealized_usd
+            profit = position.realized_pnl - position.commission_usdt + unrealized
+            balance = await repo.balance_at(
+                self._s, self._connection_id, position.open_time
+            )
+            pct = return_pct(profit, balance)
+            notional = position.entry_price * position.qty
+            out.append(
+                IncomingTrade(
+                    external_id=(
+                        f"{position.symbol}:{position.position_side}:"
+                        f"{position.first_fill_id}"
+                    ),
+                    account_external_id=ACCOUNT_EXTERNAL_ID,
+                    symbol=position.symbol,
+                    side=position.side,
+                    profit_usd=profit,
+                    account_return_pct=pct if pct is not None else ZERO,
+                    open_time=position.open_time,
+                    close_time=None,
+                    percent=(profit / notional * 100) if notional else None,
+                    size_usd=notional,
+                    leverage=None,
+                    duration_sec=None,
+                    is_open=True,
+                    tags=(),
+                    raw={
+                        "realized_pnl": str(position.realized_pnl),
+                        "commission_usdt": str(position.commission_usdt),
+                        "unrealized_usd": str(unrealized),
+                        "entry_price": str(position.entry_price),
+                        "mark_price": str(row.mark_price) if row.mark_price else None,
+                        "qty": str(position.qty),
+                        "position_side": position.position_side,
+                        "balance_at_open": str(balance) if balance is not None else None,
+                    },
+                )
+            )
+        return out
 
     async def accept_fills(
         self, fills: list[tuple[Fill, dict]]

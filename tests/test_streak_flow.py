@@ -11,9 +11,8 @@ import httpx
 import pytest
 from sqlalchemy import text
 
-from eds.app.consumers import all_consumers
 from tests.test_identity import csrf, move_day_boundary_away, register
-from tests.test_trades_flow import drain, push, sync
+from tests.test_trades_flow import consumer_named, drain, push, sync
 
 pytestmark = pytest.mark.usefixtures("clean_users")
 
@@ -114,7 +113,7 @@ async def test_clean_day_counts_and_violation_breaks_the_streak(
         headers=csrf(app_client),
         json={"violation_tag_ids": [violation["external_id"]]},
     )
-    await drain(all_consumers()[0])
+    await drain(consumer_named("remark_on_tags"))
     await close_day(factory, uid, bad_day)
     await fill_day(app_client, bad_day)
 

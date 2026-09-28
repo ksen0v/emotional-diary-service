@@ -24,6 +24,11 @@ class SourceCapabilities:
     provides_positions: bool = False
     provides_balance: bool = False
     needs_aggregation: bool = False
+    # Источник умеет присылать события сам, а не только отвечать на опрос.
+    # Экрану это нужно, чтобы отличить «поток молчит, потому что рынок
+    # тихий» от «потока нет вовсе»: у источника без потока второе —
+    # нормальное состояние, а у источника с потоком это отсутствие защиты.
+    provides_stream: bool = False
     history_depth: str = "full"  # full | days:90
 
     def as_dict(self) -> dict[str, Any]:
@@ -33,6 +38,7 @@ class SourceCapabilities:
             "provides_positions": self.provides_positions,
             "provides_balance": self.provides_balance,
             "needs_aggregation": self.needs_aggregation,
+            "provides_stream": self.provides_stream,
             "history_depth": self.history_depth,
         }
 
@@ -128,6 +134,23 @@ class TradeSource(Protocol):
         self, since: dt.datetime, until: dt.datetime | None = None
     ) -> list[IncomingTrade]:
         """Сделки, закрытые в окне. Окно никогда не уходит раньше ingest_from."""
+        ...
+
+    async def fetch_open_trades(
+        self, positions: list["SourcePosition"] | None = None
+    ) -> list[IncomingTrade]:
+        """Сделки, которые идут прямо сейчас (ТЗ 4.5, решение от 25.09).
+
+        Отдельный метод, а не флаг в `fetch_trades`: у открытой сделки другой
+        жизненный цикл. Закрытые приезжают порциями за окно времени, открытая
+        одна и та же, и её числа меняются на каждом обновлении позиции.
+
+        `positions` передаёт тот, кто их только что прочитал, — чтобы не
+        спрашивать биржу дважды за один проход. Не передали — источник
+        спросит сам: открытая сделка без свежей цены бессмысленна.
+
+        Источник без открытых позиций возвращает пустой список.
+        """
         ...
 
     async def fetch_positions(self) -> list[SourcePosition]:

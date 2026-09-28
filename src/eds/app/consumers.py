@@ -50,8 +50,34 @@ async def on_marking_changed(event: bus.Event) -> None:
         await s.commit()
 
 
+async def on_connection_changed(event: bus.Event) -> None:
+    """Подключение появилось, сменило ключ или исчезло → пересобрать потоки.
+
+    Без этого новое подключение ждало очередного обхода расписания — до минуты.
+    Первая живая проверка Binance попала ровно в эту минуту: трейдер вставил
+    ключ, сразу открыл и закрыл сделку, а поток в этот момент ещё не поднялся,
+    и сделку принесла только сверка по кнопке.
+
+    Снятие так же срочно, как подъём: отозванный ключ не должен продолжать
+    стучаться в биржу до следующего обхода.
+    """
+    from eds.app import stream as app_stream
+
+    await app_stream.registry.sync_with_db()
+    log.info(
+        "подключения изменились (%s): потоков сейчас %s",
+        event.payload.get("reason"),
+        app_stream.registry.running(),
+    )
+
+
 def all_consumers() -> list[bus.Consumer]:
+    from eds.app import ui_stream
+
     return [
+        # Мост от шины к открытым вкладкам. Свой курсор, как у любого другого
+        # потребителя: отставшая вкладка не должна тормозить движок правил.
+        ui_stream.consumer(),
         bus.Consumer(
             "remark_on_tags",
             on_tag_dictionary_changed,
@@ -61,6 +87,11 @@ def all_consumers() -> list[bus.Consumer]:
             "engine_on_marking",
             on_marking_changed,
             types=(ev.TRADES_MARKING_CHANGED,),
+        ),
+        bus.Consumer(
+            "streams_on_connection",
+            on_connection_changed,
+            types=(ev.SOURCE_CONNECTION_CHANGED,),
         ),
         bus.Consumer(
             "streak_on_day_change",

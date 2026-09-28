@@ -472,6 +472,32 @@ async def verify(
     return await _connect_out(s, result)
 
 
+class StreamCheckOut(BaseModel):
+    """Что ответила биржа на попытку поднять поток прямо сейчас."""
+
+    listen_key: str | None
+    socket: str | None
+    error: str | None
+
+
+@router.post(
+    "/source/connections/{connection_id}/stream-check", response_model=StreamCheckOut
+)
+async def stream_check(
+    connection_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> StreamCheckOut:
+    """Проверить поток к бирже и показать причину, если он не идёт.
+
+    Фоновый поток переподключается сам и ошибки внутрь себя прячет — это
+    правильно для работы и бесполезно, когда надо ответить на вопрос
+    «почему сделка не приехала».
+    """
+    return StreamCheckOut(**await service.check_stream(s, user.user_id, connection_id))
+
+
 @router.delete("/source/connections/{connection_id}", status_code=204)
 async def delete(
     connection_id: uuid.UUID,

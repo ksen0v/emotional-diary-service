@@ -51,6 +51,10 @@ export type Trade = {
   marking: 'clean' | 'violation' | 'unreviewed'
   marked_by: string
   tags: Tag[]
+  // Открытая позиция — тоже сделка (ТЗ 4.5). В счётчики дня она не входит,
+  // но в ленте стоит и размечается: решение принимается, пока сделка в рынке,
+  // а не через час после закрытия.
+  is_open: boolean
 }
 
 export type Totals = {
@@ -61,10 +65,15 @@ export type Totals = {
   profit_usd: string
   account_return_pct: string
   coverage_pct: string
+  open_count: number
 }
 
 export type Feed = {
   items: Trade[]
+  // Открытые сделки приходят отдельным списком и только на первой странице:
+  // они не участвуют в постраничном курсоре по времени закрытия, которого
+  // у них ещё нет.
+  open_items: Trade[]
   next_cursor: string | null
   has_more: boolean
   totals: Totals
@@ -183,6 +192,13 @@ export type SwitchConsequences = {
   gaining_capabilities?: string[]
 }
 
+// Ответ диагностики потока: два шага и причина, если один не прошёл.
+export type StreamCheck = {
+  listen_key: string | null
+  socket: string | null
+  error: string | null
+}
+
 export type Connections = {
   connections: Connection[]
   active_connection_id: string | null
@@ -194,8 +210,10 @@ export type SyncReport = {
   remarked: number
   unchanged: number
   skipped_before_ingest_from: number
-  skipped_open: number
   skipped_unknown_account: number
+  opened: number
+  open_updated: number
+  closed: number
 }
 
 export type TagRow = {
@@ -238,6 +256,10 @@ export type MarkedOut = {
     streak: { current: number; previous: number }
     recomputed_days: string[]
     engine: Record<string, number | boolean>
+    // Отметка на открытой сделке ставится сразу, а инцидент и блокировка
+    // появятся при закрытии позиции (ТЗ 4.5). Экран обязан это сказать,
+    // иначе отметка выглядит как ничего не сделавшая.
+    pending_until_close: boolean
   }
   metrics: MarkingMetrics['marking']
 }
@@ -269,11 +291,27 @@ export type DayCounters = {
   drawdown_full_pct: string | null
 }
 
+// Состояние потока событий от биржи. Отдельно от сверки, потому что это
+// разные вопросы: сверка отвечает «когда в последний раз спрашивали»,
+// поток — «слышим ли мы биржу прямо сейчас».
+export type TodayStream = {
+  expected: boolean
+  connected: boolean
+  opened_at: string | null
+  last_event_at: string | null
+  reconnects: number
+  last_error: string | null
+}
+
 export type TodaySource = {
   provider: string
   sync_state: string
   account: string | null
   last_event_at: string | null
+  stream: TodayStream | null
+  // Сколько сервис уже ничего не знает об источнике. Живой поток простоем
+  // не считается: молчание при открытом сокете означает «сделок нет».
+  idle_sec: number | null
   stale: boolean
   capabilities: Record<string, boolean | string>
 }

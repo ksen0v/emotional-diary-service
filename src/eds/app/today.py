@@ -80,6 +80,11 @@ async def build(
         lock_active=live["lock"] is not None,
     )
 
+    # Считается один раз: блок источника нужен и экрану, и списку «что требует
+    # действия», а спрашивать состояние потока дважды значило бы однажды
+    # показать в двух местах разное.
+    source = await _source_block(s, connection)
+
     return {
         "day": day,
         "server_time": now,
@@ -123,9 +128,17 @@ async def build(
         # сессию, полезно увидеть, чем кончился прошлый день, — особенно
         # заполнен ли разбор.
         "yesterday": await _yesterday(s, user_id, day),
-        "source": await _source_block(s, connection),
+        "source": source,
         "attention": await _attention(
-            counters, connection, live["unmarked_overdue"]
+            counters,
+            connection,
+            live["unmarked_overdue"],
+            source,
+            session_open=bool(
+                day_row
+                and day_row.session_opened_at
+                and not day_row.session_closed_at
+            ),
         ),
         "thresholds": {
             "pass_score": prefs.pass_score,
@@ -179,6 +192,8 @@ async def _source_block(s: AsyncSession, connection) -> dict | None:
     if connection is None:
         return None
     run = await source_repo.last_reconcile_run(s, connection.id)
+    stream = _stream_block(connection)
+    contact = _last_contact(run, stream)
     return {
         "provider": connection.provider,
         "sync_state": connection.state,
@@ -186,13 +201,87 @@ async def _source_block(s: AsyncSession, connection) -> dict | None:
             (a.name for a in await source_repo.accounts_of(s, connection.id)), None
         ),
         "last_event_at": run.started_at if run else None,
-        # «Устарел» пока означает только ошибку подключения. Считать устаревшим
-        # молчание дольше N минут можно будет, когда появится автоматическая
-        # сверка по расписанию: сейчас сверка идёт по кнопке, и любое молчание
-        # было бы ложной тревогой.
-        "stale": connection.state == "error",
+        # Поток к бирже отдельно от сверки, потому что это разные вопросы.
+        # Раньше экран знал только «когда была последняя сверка», и поток,
+        # не поднявшийся ни разу, выглядел на нём точно так же, как рабочий.
+        "stream": stream,
+        "idle_sec": (
+            None
+            if contact is None
+            else int((dt.datetime.now(dt.UTC) - contact).total_seconds())
+        ),
+        # «Устарел» — это ошибка подключения или поток, который должен быть
+        # поднят и не поднят. Молчание живого потока устареванием не считается:
+        # трейдер не торгует непрерывно, и тишина при подключённом сокете —
+        # нормальное состояние, а не сбой. Ровно на этом различии сервис
+        # однажды уже соврал сам себе и рвал здоровое соединение.
+        "stale": connection.state == "error"
+        or bool(stream and stream["expected"] and not stream["connected"]),
         "capabilities": dict(connection.capabilities),
     }
+
+
+def _stream_block(connection) -> dict | None:
+    """Что сейчас с потоком событий от биржи."""
+    from eds.app import stream as app_stream
+
+    row = app_stream.registry.state_of(connection.id)
+    # Возможность источника, а не `if provider == 'binance'` (контракт
+    # `SourceCapabilities`). Поднятый поток тоже считается: у подключений,
+    # созданных до появления этого флага, в capabilities его нет, и без второй
+    # половины условия их статус пришлось бы «оживлять» пересохранением ключа.
+    expected = bool(dict(connection.capabilities).get("provides_stream")) or (
+        row is not None
+    )
+    if not expected:
+        return None
+    if row is None:
+        return {
+            "expected": True,
+            "connected": False,
+            "opened_at": None,
+            "last_event_at": None,
+            "reconnects": 0,
+            "last_error": "поток ещё не поднят",
+        }
+    return {
+        "expected": True,
+        "connected": bool(row["connected"]),
+        "opened_at": row["opened_at"],
+        "last_event_at": row["last_event_at"],
+        "reconnects": row["reconnects"],
+        "last_error": row["last_error"],
+    }
+
+
+def _last_contact(run, stream: dict | None) -> dt.datetime | None:
+    """Когда сервис в последний раз что-то знал об источнике.
+
+    Самое свежее из трёх: сверка, открытие потока, событие из потока. Считать
+    простой только по сверке значило бы объявлять простоем те минуты, когда
+    поток открыт и всё в порядке.
+    """
+    times = [_aware(run.started_at) if run else None]
+    if stream is not None:
+        times.append(_parsed(stream["opened_at"]) if stream["connected"] else None)
+        times.append(_parsed(stream["last_event_at"]))
+    known = [t for t in times if t is not None]
+    return max(known) if known else None
+
+
+def _aware(value: dt.datetime | None) -> dt.datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+
+
+def _parsed(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    try:
+        return _aware(dt.datetime.fromisoformat(value))
+    except ValueError:
+        return None
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -210,7 +299,11 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 
 
 async def _attention(
-    counters: dict, connection, unmarked_overdue: list[dict] | None = None
+    counters: dict,
+    connection,
+    unmarked_overdue: list[dict] | None = None,
+    source: dict | None = None,
+    session_open: bool = False,
 ) -> list[dict]:
     """Что требует действия. Один список вместо набора булевых полей."""
     out: list[dict] = []
@@ -246,4 +339,38 @@ async def _attention(
                 or "Источник сделок не отвечает. Пока он молчит, защиты нет.",
             }
         )
+    idle = _idle_alert(source, session_open)
+    if idle is not None:
+        out.append(idle)
     return out
+
+
+# Простой синка дольше пяти минут при открытой сессии — алерт (ТЗ 9.6).
+IDLE_ALERT_SEC = 5 * 60
+
+
+def _idle_alert(source: dict | None, session_open: bool) -> dict | None:
+    """Сервис давно ничего не знает об источнике, а трейдер торгует.
+
+    Только при открытой сессии: вне сессии тишина ничего не значит, и алерт
+    был бы шумом. Живой поток простоем не считается — его «тишина» означает,
+    что сделок нет, а не что связи нет; иначе алерт горел бы весь день
+    у любого, кто торгует не каждую минуту.
+    """
+    if source is None or not session_open:
+        return None
+    stream = source.get("stream")
+    if stream and stream["connected"]:
+        return None
+    idle = source.get("idle_sec")
+    if idle is None or idle < IDLE_ALERT_SEC:
+        return None
+    return {
+        "code": "source_idle",
+        "count": idle // 60,
+        "message": (
+            f"Сервис не получал сделок {idle // 60} "
+            f"{_plural(idle // 60, 'минуту', 'минуты', 'минут')}. "
+            "Пока связи нет, правила считать нечем — проверь подключение."
+        ),
+    }

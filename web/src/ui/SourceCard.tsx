@@ -6,6 +6,7 @@ import type {
   ConnectResult,
   Connections,
   Probe,
+  StreamCheck,
   SwitchConsequences,
 } from '../lib/types'
 import { KeyRights, ProbeView, SourceConnect } from './SourceConnect'
@@ -45,6 +46,7 @@ export function SourceCard() {
   >(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const [probe, setProbe] = useState<Probe | null>(null)
+  const [streamCheck, setStreamCheck] = useState<StreamCheck | null>(null)
   const [error, setError] = useState('')
 
   function refresh() {
@@ -92,6 +94,23 @@ export function SourceCard() {
     },
     onError: (err) => {
       setProbe(null)
+      setError(message(err))
+    },
+  })
+
+  // Диагностика потока отдельной кнопкой. Рабочий поток ошибки прячет внутрь
+  // и переподключается сам — это верно для работы и бесполезно, когда надо
+  // ответить, почему сделка не приехала. Проверка идёт тем же путём: ключ
+  // потока, потом соединение, и первый непройденный шаг и есть ответ.
+  const checkStream = useMutation({
+    mutationFn: (id: string) =>
+      api.post<StreamCheck>(`/source/connections/${id}/stream-check`),
+    onSuccess: (data) => {
+      setStreamCheck(data)
+      setError('')
+    },
+    onError: (err) => {
+      setStreamCheck(null)
       setError(message(err))
     },
   })
@@ -190,6 +209,17 @@ export function SourceCard() {
             </div>
           )}
 
+          {streamCheck && row.capabilities.provides_stream === true && (
+            <div
+              className={streamCheck.error ? 'err' : 'hint'}
+              style={{ marginTop: 6 }}
+            >
+              Поток: ключ — {streamCheck.listen_key ?? '—'}, соединение —{' '}
+              {streamCheck.socket ?? '—'}
+              {streamCheck.error ? `. ${streamCheck.error}` : '.'}
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
             {Object.entries(row.capabilities).map(([key, value]) => (
               <span
@@ -232,6 +262,15 @@ export function SourceCard() {
                 style={{ fontSize: 12, padding: '6px 12px' }}
               >
                 {verify.isPending ? 'Проверяю…' : 'Проверить'}
+              </button>
+            )}
+            {row.capabilities.provides_stream === true && (
+              <button
+                onClick={() => checkStream.mutate(row.id)}
+                disabled={checkStream.isPending}
+                style={{ fontSize: 12, padding: '6px 12px' }}
+              >
+                {checkStream.isPending ? 'Проверяю поток…' : 'Проверить поток'}
               </button>
             )}
             {row.provider !== 'fake' && (

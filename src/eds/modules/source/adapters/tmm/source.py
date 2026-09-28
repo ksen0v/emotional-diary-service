@@ -309,6 +309,12 @@ class TmmSource:
             out.append(full[0] if full else row)
         return out
 
+    async def fetch_open_trades(
+        self, positions: list[SourcePosition] | None = None
+    ) -> list[IncomingTrade]:
+        """Открытых сделок этот источник не отдаёт — он объявлен без позиций."""
+        return []
+
     async def fetch_positions(self) -> list[SourcePosition]:
         """Открытых позиций у этого источника нет — и это ответ, а не заглушка.
 

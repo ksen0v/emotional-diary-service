@@ -38,8 +38,14 @@ class IngestReport:
     remarked: int = 0
     unchanged: int = 0
     skipped_before_ingest_from: int = 0
-    skipped_open: int = 0
     skipped_unknown_account: int = 0
+    # Открытая позиция — это сделка, которая идёт прямо сейчас (ТЗ 4.5,
+    # решение от 25.09). Её приём считается отдельно от закрытых: числа
+    # у неё меняются на каждом обновлении, и мешать их с «принято» значило бы
+    # показывать в отчёте о сверке движение там, где ничего не произошло.
+    opened: int = 0
+    open_updated: int = 0
+    closed: int = 0
 
     # Что сделал движок правил на этой порции. Пусто до шага 9 и у путей,
     # которые движок не зовут.
@@ -52,7 +58,9 @@ class IngestReport:
             "remarked": self.remarked,
             "unchanged": self.unchanged,
             "skipped_before_ingest_from": self.skipped_before_ingest_from,
-            "skipped_open": self.skipped_open,
             "skipped_unknown_account": self.skipped_unknown_account,
+            "opened": self.opened,
+            "open_updated": self.open_updated,
+            "closed": self.closed,
             "engine": self.engine,
         }

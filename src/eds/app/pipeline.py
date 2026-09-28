@@ -14,7 +14,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eds.app import engine
+from eds.app import engine, ui_stream
 from eds.contracts.ingest import IngestContext, IngestReport
 from eds.contracts.source import TradeSource
 from eds.modules.identity import repo as identity_repo
@@ -199,6 +199,10 @@ async def _run_sync(
         )
 
         trades = await source.fetch_trades(since=window_from, until=None)
+        # Открытые сделки приезжают тем же путём и в той же порции: приём
+        # различает их сам, а собирать две ленты из двух вызовов значило бы
+        # завести второй порядок обработки там, где нужен один.
+        trades = trades + await source.fetch_open_trades()
         for item in trades:
             await source_repo.learn_tags(s, user_id, connection.id, item.tags)
         await s.flush()
@@ -272,7 +276,7 @@ async def refresh_positions(
         )
 
     base = balance.wallet_usdt if balance is not None else None
-    rows = []
+    rows: list[dict] = []
     total = Decimal("0")
     for position in positions:
         total += position.unrealized_usd
@@ -298,6 +302,22 @@ async def refresh_positions(
     # он читался бы как «открытых позиций нет».
     unrealized_pct = (total / base * 100) if base else None
 
+    # Строка открытой сделки в ленте живёт именно отсюда: позиции только что
+    # перечитаны, значит и результат по ней теперь свежий. Отдельного пути
+    # у неё нет — тот же приём, что у закрытых.
+    live = IngestReport()
+    async with source_for(s, connection) as (source, _again):
+        # Позиции уже прочитаны выше — передаём их, а не спрашиваем биржу
+        # второй раз за один проход.
+        open_trades = await source.fetch_open_trades(positions)
+    if open_trades:
+        ctx = await build_context(s, user_id, connection)
+        live = await trades_service.ingest_batch(s, ctx, open_trades)
+    # Живые числа уходят прямо на экран, минуя шину: цена по открытой позиции
+    # меняется каждую секунду, и складывать такие тики в `events.outbox`,
+    # который мы не чистим, значило бы засорять историю сервиса шумом.
+    await push_open_trades(s, user_id)
+
     prefs = await auth.prefs_of(s, user_id)
     day = today_for(prefs.timezone, prefs.day_cutoff, moment)
     # Повод с точностью до минуты: обновление позиций приходит часто, а
@@ -316,6 +336,11 @@ async def refresh_positions(
     return {
         "available": True,
         "positions": len(rows),
+        "open_trades": {
+            "opened": live.opened,
+            "updated": live.open_updated,
+            "closed": live.closed,
+        },
         "unrealized_pct": str(unrealized_pct) if unrealized_pct is not None else None,
         "drawdown_full_pct": (
             str(counters.drawdown_full_pct)
@@ -323,3 +348,32 @@ async def refresh_positions(
             else None
         ),
     }
+
+
+async def push_open_trades(s: AsyncSession, user_id: uuid.UUID) -> int:
+    """Отправить открытым вкладкам текущее состояние идущих сделок.
+
+    Читает из базы, а не из порции приёма: на экране должно оказаться то,
+    что действительно лежит в ленте, а не то, что мы только что посчитали.
+    Расхождение между этими двумя вещами — самый неприятный вид ошибки,
+    потому что воспроизвести его нельзя.
+    """
+    from eds.modules.trades import repo as trades_repo
+
+    rows = await trades_repo.open_trades(s, user_id)
+    for row in rows:
+        ui_stream.push_open_trade(
+            user_id,
+            {
+                "trade_id": str(row.id),
+                "symbol": row.symbol,
+                "side": row.side,
+                "open_time": row.open_time.isoformat(),
+                "profit_usd": str(row.profit_usd),
+                "account_return_pct": str(row.account_return_pct),
+                "percent": str(row.percent) if row.percent is not None else None,
+                "marking": row.marking,
+                "trading_day": row.trading_day.isoformat(),
+            },
+        )
+    return len(rows)

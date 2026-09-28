@@ -10,10 +10,9 @@ import datetime as dt
 import httpx
 import pytest
 
-from eds.app.consumers import all_consumers
 from tests.test_identity import csrf, move_day_boundary_away, register
 from tests.test_premarket import BEST
-from tests.test_trades_flow import drain, push, sync
+from tests.test_trades_flow import consumer_named, drain, push, sync
 
 pytestmark = pytest.mark.usefixtures("clean_users")
 
@@ -193,7 +192,7 @@ async def test_week_facts_carry_the_metrics_from_the_spec(app_client) -> None:
         headers=csrf(app_client),
         json={"violation_tag_ids": [violation["external_id"]]},
     )
-    await drain(all_consumers()[0])
+    await drain(consumer_named("remark_on_tags"))
 
     res = await app_client.get("/api/v1/entries", params={"level": "week"})
     items = res.json()["items"]

@@ -10,10 +10,19 @@ from typing import Final
 # --- source ---
 SOURCE_STREAM_LOST: Final = "source.stream_lost"
 SOURCE_TAG_DICTIONARY_CHANGED: Final = "source.tag_dictionary_changed"
+# Подключение появилось, сменило ключ, стало активным или исчезло. Нужно, чтобы
+# поток к бирже поднимался в тот же момент, а не в следующий обход расписания:
+# первая живая проверка Binance показала, что минута ожидания как раз и съедает
+# сделку, которой трейдер проверяет, работает ли сервис.
+SOURCE_CONNECTION_CHANGED: Final = "source.connection_changed"
 
 # --- trades ---
 TRADES_INGESTED: Final = "trades.ingested"
 TRADES_MARKING_CHANGED: Final = "trades.marking_changed"
+# Открытая позиция появилась в ленте. Отдельное событие, а не `ingested`:
+# у него другой смысл и другие слушатели. `ingested` означает «сделка попала
+# в счётчики дня», и открытая в них не попадает (ТЗ 4.5).
+TRADES_OPENED: Final = "trades.opened"
 
 # --- daybook ---
 DAYBOOK_ADMISSION_DECIDED: Final = "daybook.admission_decided"
@@ -40,8 +49,10 @@ PLATFORM_TEST_PING: Final = "platform.test_ping"
 ALL: Final = (
     SOURCE_STREAM_LOST,
     SOURCE_TAG_DICTIONARY_CHANGED,
+    SOURCE_CONNECTION_CHANGED,
     TRADES_INGESTED,
     TRADES_MARKING_CHANGED,
+    TRADES_OPENED,
     DAYBOOK_ADMISSION_DECIDED,
     DAYBOOK_SESSION_OPENED,
     DAYBOOK_DAY_CLOSED,

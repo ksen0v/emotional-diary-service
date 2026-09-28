@@ -91,7 +91,30 @@ async def activate(
         )
 
     await repo.deactivate_all(s, user_id)
-    return await repo.activate(s, connection)
+    activated = await repo.activate(s, connection)
+    await _connection_changed(s, user_id, connection.id, "activated")
+    return activated
+
+
+async def _connection_changed(
+    s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID, reason: str
+) -> None:
+    """Сообщить, что набор подключений изменился.
+
+    Событие, а не прямой вызов: поток к бирже поднимает оркестрация, и модуль
+    source про неё не знает. Без него новое подключение ждало бы очередного
+    обхода расписания — до минуты, ровно той минуты, в которую трейдер
+    и совершает проверочную сделку.
+    """
+    await bus.publish(
+        s,
+        ev.SOURCE_CONNECTION_CHANGED,
+        {
+            "user_id": str(user_id),
+            "connection_id": str(connection_id),
+            "reason": reason,
+        },
+    )
 
 
 async def set_fake_capabilities(
@@ -183,7 +206,66 @@ async def push_fake_position(
             }
         ],
     )
-    return {"symbol": symbol.upper(), "unrealized_usd": str(unrealized_usd)}
+    trade = await _fake_open_trade(s, connection, symbol, qty, unrealized_usd, wallet_usdt)
+    return {
+        "symbol": symbol.upper(),
+        "unrealized_usd": str(unrealized_usd),
+        "trade_external_id": trade["external_id"],
+    }
+
+
+async def _fake_open_trade(
+    s: AsyncSession,
+    connection,
+    symbol: str,
+    qty: Decimal,
+    unrealized_usd: Decimal,
+    wallet_usdt: Decimal,
+) -> dict:
+    """Положить в ленту фейка открытую сделку под эту позицию.
+
+    На бирже позиция и открытая сделка — одно и то же событие, поэтому
+    dev-панель обязана давать оба. Без этого живую строку в ленте нельзя было
+    увидеть иначе как открыв настоящую позицию на свои деньги: фейк отдавал
+    позицию для расчёта просадки, но в ленту она не попадала.
+
+    Повторный вызов по тому же символу обновляет ту же сделку, а не добавляет
+    вторую: позиция по символу одна (режим hedge мы не поддерживаем).
+    """
+    external_id = f"fake-open-{connection.id.hex[:6]}-{symbol.upper()}"
+    existing = await repo.fake_trade_by_external_id(s, connection.id, external_id)
+    open_time = (
+        dt.datetime.fromisoformat(existing.payload["open_time"])
+        if existing is not None
+        else dt.datetime.now(dt.UTC)
+    )
+    payload = {
+        "external_id": external_id,
+        "account_external_id": ACCOUNT_EXTERNAL_ID,
+        "symbol": symbol.upper(),
+        "side": "long" if qty >= 0 else "short",
+        "profit_usd": str(unrealized_usd),
+        "account_return_pct": str(
+            unrealized_usd / wallet_usdt * 100 if wallet_usdt else Decimal("0")
+        ),
+        "percent": None,
+        "size_usd": None,
+        "leverage": None,
+        "duration_sec": None,
+        "open_time": open_time.isoformat(),
+        "close_time": None,
+        "is_open": True,
+        "tags": [],
+    }
+    if existing is not None:
+        existing.payload = payload
+        await s.flush()
+    else:
+        # Время закрытия у открытой сделки — время открытия: столбец в ленте
+        # фейка служит только сортировкой, а «закрыта» и «открыта» различает
+        # сам payload.
+        await repo.add_fake_trade(s, connection.id, payload, open_time)
+    return payload
 
 
 async def set_violation_tags(
@@ -546,6 +628,8 @@ async def connect(
     if await repo.active_connection(s, user_id) is None:
         await repo.activate(s, connection)
 
+    await _connection_changed(s, user_id, connection.id, "connected")
+
     return {
         "connection": connection,
         "accounts": accounts,
@@ -668,12 +752,68 @@ async def _save_limits(s: AsyncSession, connection_id: uuid.UUID, client: TmmCli
     )
 
 
+async def check_stream(
+    s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID
+) -> dict:
+    """Проверить поток к бирже прямо сейчас и вернуть причину, если он не идёт.
+
+    Существует потому, что молчащий поток и работающий выглядят одинаково.
+    Фоновый поток ловит обрывы внутри себя и переподключается — это правильно
+    для работы и бесполезно для диагностики: на вопрос «почему сделка не
+    приехала» надо отвечать текстом ошибки, а не догадками.
+
+    Проверка идёт тем же путём, что и настоящий поток: ключ потока, потом
+    соединение. Первый же шаг, который не прошёл, и есть ответ.
+    """
+    connection = await repo.connection_by_id(s, user_id, connection_id)
+    if connection is None:
+        raise AppError("not_found", "Подключение не найдено.", 404)
+    if connection.provider != BINANCE:
+        raise AppError(
+            "provider_not_supported",
+            "Поток к бирже есть только у Binance.",
+            409,
+        )
+    if not connection.key_encrypted or not connection.secret_encrypted:
+        raise AppError("key_missing", "У подключения не сохранён ключ.", 409)
+
+    from eds.modules.source.adapters.binance.ws import UserDataStream
+
+    key = crypto.decrypt(connection.key_encrypted)
+    secret = crypto.decrypt(connection.secret_encrypted)
+    out: dict = {"listen_key": None, "socket": None, "error": None}
+
+    client = BinanceClient(key, secret)
+    async with client:
+        stream = UserDataStream(client)
+        try:
+            listen_key = await stream.open_listen_key()
+        except Exception as exc:  # noqa: BLE001 — нужна причина, любая
+            out["listen_key"] = "не выдан"
+            out["error"] = f"{type(exc).__name__}: {exc}"
+            return out
+        out["listen_key"] = "выдан"
+
+        try:
+            await stream.probe_socket(listen_key)
+            out["socket"] = "открылся"
+        except Exception as exc:  # noqa: BLE001
+            out["socket"] = "не открылся"
+            out["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            await stream.close_listen_key()
+    return out
+
+
 async def delete(s: AsyncSession, user_id: uuid.UUID, connection_id: uuid.UUID) -> None:
     """Удалить подключение. Сделки остаются — история неизменяема (ТЗ 9.2)."""
     connection = await repo.connection_by_id(s, user_id, connection_id)
     if connection is None:
         raise AppError("not_found", "Подключение не найдено.", 404)
     await repo.delete_connection(s, connection)
+    # Снять поток так же срочно, как поднять: отозванный ключ не должен
+    # продолжать стучаться в биржу до следующего обхода расписания.
+    await _connection_changed(s, user_id, connection_id, "deleted")
 
 
 def switch_consequences(current: Connection | None, target: Connection) -> dict:

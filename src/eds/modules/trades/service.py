@@ -32,12 +32,20 @@ async def ingest_batch(
     for item in ordered:
         report.received += 1
 
-        if item.is_open or item.close_time is None:
-            # Открытые позиции в MVP не принимаем (ТЗ 4.5, решение ОВ-3).
-            report.skipped_open += 1
+        # Открытая позиция принимается без проверки на точку отсчёта.
+        # Это не дыра в правиле «историю не импортируем»: открытая позиция —
+        # не история, а то, что происходит прямо сейчас, и трейдер видит её
+        # в терминале в эту же секунду (ТЗ 4.5, решение от 25.09).
+        if not item.is_open and item.close_time is None:
+            # Закрытая сделка без времени закрытия — испорченные данные.
+            report.skipped_unknown_account += 1
             continue
 
-        if item.close_time < ctx.ingest_from:
+        if (
+            not item.is_open
+            and item.close_time is not None
+            and item.close_time < ctx.ingest_from
+        ):
             # Истории не импортируем: точка отсчёта — момент подключения.
             report.skipped_before_ingest_from += 1
             continue
@@ -78,7 +86,7 @@ async def _ingest_one(
             duration_sec=item.duration_sec,
             open_time=item.open_time,
             close_time=item.close_time,
-            is_open=False,
+            is_open=item.is_open,
             trading_day=normalize.trading_day(
                 item.open_time, ctx.timezone, ctx.day_cutoff
             ),
@@ -93,6 +101,26 @@ async def _ingest_one(
             updated_at=dt.datetime.now(dt.UTC),
         )
         await repo.insert(s, trade, _tag_rows(item))
+        if trade.is_open:
+            # День в счётчики не отдаём: открытая сделка в них не участвует,
+            # и звать движок было бы приглашением пересчитать день ни за чем.
+            report.opened += 1
+            await bus.publish(
+                s,
+                ev.TRADES_OPENED,
+                {
+                    "user_id": str(ctx.user_id),
+                    "trade_id": str(trade.id),
+                    "trading_day": trade.trading_day.isoformat(),
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "open_time": trade.open_time.isoformat(),
+                    "profit_usd": str(trade.profit_usd),
+                    "account_return_pct": str(trade.account_return_pct),
+                },
+                dedup_key=f"opened:{trade.id}",
+            )
+            return
         report.touched_days.add(trade.trading_day)
         await bus.publish(
             s,
@@ -109,6 +137,51 @@ async def _ingest_one(
             dedup_key=f"ingested:{trade.id}",
         )
         report.inserted += 1
+        return
+
+    # Открытая сделка живёт: результат, процент и объём меняются на каждом
+    # обновлении позиции. Разметку при этом не трогаем — её мог поставить
+    # трейдер, и источник о ней не знает.
+    if existing.is_open:
+        closing = not item.is_open and item.close_time is not None
+        existing.profit_usd = item.profit_usd
+        existing.account_return_pct = item.account_return_pct
+        existing.percent = item.percent
+        existing.size_usd = item.size_usd
+        existing.duration_sec = item.duration_sec
+        existing.raw = item.raw
+        existing.updated_at = dt.datetime.now(dt.UTC)
+        if not closing:
+            report.open_updated += 1
+            await s.flush()
+            return
+
+        # Позиция закрылась. Только здесь сделка впервые попадает в счётчики
+        # дня, в кривую и в метрики — и только здесь по её отметке срабатывает
+        # SR-1: инцидент неудаляем, и записывать его по сделке с неизвестным
+        # результатом нельзя (ТЗ 4.5, решение от 25.09).
+        existing.is_open = False
+        existing.close_time = item.close_time
+        existing.is_significant = normalize.is_significant(
+            item.account_return_pct, ctx.significance_pct
+        )
+        await s.flush()
+        report.touched_days.add(existing.trading_day)
+        report.closed += 1
+        await bus.publish(
+            s,
+            ev.TRADES_INGESTED,
+            {
+                "user_id": str(ctx.user_id),
+                "trade_id": str(existing.id),
+                "trading_day": existing.trading_day.isoformat(),
+                "marking": existing.marking,
+                "is_significant": existing.is_significant,
+                "account_return_pct": str(existing.account_return_pct),
+                "profit_usd": str(existing.profit_usd),
+            },
+            dedup_key=f"ingested:{existing.id}",
+        )
         return
 
     if existing.tags_hash == tags_hash:

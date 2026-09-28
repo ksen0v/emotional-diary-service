@@ -43,12 +43,19 @@ class TradeOut(BaseModel):
     close_time: dt.datetime | None
     trading_day: dt.date
     is_significant: bool
+    # Сделка идёт прямо сейчас. Экран по этому полю рисует живую строку:
+    # результат меняется, времени закрытия нет, таймер тикает.
+    is_open: bool
     marking: str
     marked_by: str
     tags: list[TagOut]
 
 
 class TotalsOut(BaseModel):
+    # Сколько сделок идёт прямо сейчас. Отдельным числом, потому что в
+    # остальных итогах они не участвуют (ТЗ 4.5), а строк в ленте больше,
+    # чем «Сделок», и это нужно объяснить прямо на экране.
+    open_count: int = 0
     count: int
     significant_count: int
     violations_count: int
@@ -60,6 +67,9 @@ class TotalsOut(BaseModel):
 
 class FeedOut(BaseModel):
     items: list[TradeOut]
+    # Открытые сделки идут отдельным списком и всегда целиком: у них нет
+    # времени закрытия, а курсор ленты сортирует именно по нему.
+    open_items: list[TradeOut] = []
     next_cursor: str | None
     has_more: bool
     totals: TotalsOut
@@ -135,6 +145,7 @@ def trade_out(trade: Trade, tags: list[TradeTag]) -> TradeOut:
         close_time=trade.close_time,
         trading_day=trade.trading_day,
         is_significant=trade.is_significant,
+        is_open=trade.is_open,
         marking=trade.marking,
         marked_by=trade.marked_by,
         tags=[
@@ -170,11 +181,18 @@ async def feed(
     )
     totals = await service.totals(s, user.user_id, days, marking)
 
+    # Открытые показываем только на первой странице: они не часть ленты
+    # прошлого, а то, что идёт сейчас, и повторять их при прокрутке незачем.
+    live = [] if cursor else await repo.open_trades(s, user.user_id, days)
+    live_tags = await repo.tags_of(s, [row.id for row in live])
+
     return FeedOut(
         items=[trade_out(row, tags.get(row.id, [])) for row in rows],
+        open_items=[trade_out(row, live_tags.get(row.id, [])) for row in live],
         next_cursor=_encode_cursor(rows[-1]) if rows and has_more else None,
         has_more=has_more,
         totals=TotalsOut(
+            open_count=totals["open_count"],
             count=totals["count"],
             significant_count=totals["significant_count"],
             violations_count=totals["violations_count"],

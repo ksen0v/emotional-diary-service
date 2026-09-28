@@ -231,6 +231,20 @@ async def add_fake_trade(
     return row
 
 
+async def fake_trade_by_external_id(
+    s: AsyncSession, connection_id: uuid.UUID, external_id: str
+) -> FakeFeedItem | None:
+    """Строка фейковой ленты по внешнему id. Нужна, чтобы обновлять открытую
+    сделку, а не плодить по одной на каждое обновление позиции."""
+    res = await s.execute(
+        select(FakeFeedItem).where(
+            FakeFeedItem.connection_id == connection_id,
+            FakeFeedItem.payload["external_id"].astext == external_id,
+        )
+    )
+    return res.scalars().first()
+
+
 async def fake_feed_size(s: AsyncSession, connection_id: uuid.UUID) -> int:
     res = await s.execute(
         select(FakeFeedItem.id).where(FakeFeedItem.connection_id == connection_id)

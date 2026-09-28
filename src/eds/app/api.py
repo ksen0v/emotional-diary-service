@@ -9,11 +9,12 @@ import contextlib
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eds.app import diary, pipeline, today
+from eds.app import diary, pipeline, today, ui_stream
 from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
@@ -302,6 +303,63 @@ async def freeze_day(
     return await streaks_service.state_out(s, user.user_id, day)
 
 
+@router.get("/stream")
+async def live_stream(
+    request: Request,
+    user: auth.CurrentUser = Depends(auth.current_user),
+) -> StreamingResponse:
+    """Живое обновление интерфейса (Архитектура ч.2 §2).
+
+    Блокировка возникает не по действию в интерфейсе, а по событию извне.
+    При опросе раз в тридцать секунд трейдер полминуты смотрит на обычный
+    экран, хотя сервис уже решил, что торговать нельзя, — и за эти полминуты
+    открывается ещё одна сделка в тильте.
+
+    **`GET /today` остаётся полным источником истины.** Поток избавляет
+    от ожидания, а не заменяет чтение: SSE не проходит через часть прокси
+    и расширений, и вкладка, собирающая состояние только из событий,
+    после первого же разрыва покажет неправду.
+    """
+    if ui_stream.hub.count(user.user_id) >= ui_stream.MAX_CONNECTIONS:
+        # Четвёртая вкладка не ломается: она переходит на опрос и узнаёт
+        # о блокировке на несколько секунд позже (Архитектура ч.2 §2).
+        raise AppError(
+            "stream_limit_reached",
+            "Открыто слишком много вкладок сервиса. Эта будет обновляться "
+            "опросом — чуть медленнее, но всё покажет.",
+            429,
+            {"limit": ui_stream.MAX_CONNECTIONS},
+        )
+
+    last_seen = request.headers.get("last-event-id")
+    try:
+        after_id = int(last_seen) if last_seen else None
+    except ValueError:
+        after_id = None
+
+    # Подписка здесь, а не внутри генератора: между ответом «200» и первым его
+    # шагом события бы терялись, а проверка лимита выше считала бы вкладки,
+    # которых ещё нет.
+    queue = ui_stream.hub.subscribe(user.user_id)
+    missed = ui_stream.hub.replay(user.user_id, after_id)
+
+    return StreamingResponse(
+        ui_stream.frames(
+            user.user_id,
+            queue,
+            missed,
+            disconnected=request.is_disconnected,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            # Нужен nginx и подобным: без него прокси буферизует поток
+            # и события приходят пачками, то есть поток перестаёт быть потоком.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/positions/refresh")
 async def refresh_positions(
     user: auth.CurrentUser = Depends(auth.current_user),
@@ -354,7 +412,8 @@ async def mark_trade(
     # Историю переписать нельзя (ТЗ 9.2). Снять отметку, из которой уже
     # родился инцидент, — это и есть попытка переписать: инцидент останется,
     # а сделка, его породившая, окажется чистой, и объяснить инцидент будет
-    # нечем. Поставить более строгую отметку можно всегда.
+    # нечем. Поставить более строгую отметку можно всегда. У открытой сделки
+    # инцидента ещё нет по определению, поэтому и запрета на ней нет.
     if body.marking == "clean" and trade.marking == "violation":
         born = await _incident_of_trade(s, user.user_id, trade)
         if born is not None:
@@ -420,6 +479,11 @@ async def mark_trade(
             "streak": {"current": state.current, "previous": before},
             "recomputed_days": [day.isoformat()],
             "engine": report.as_dict(),
+            # Отметка на открытой сделке ставится сразу и видна, а инцидент
+            # и блокировка появятся в момент закрытия позиции (ТЗ 4.5,
+            # решение от 25.09). Экран обязан сказать это сам: иначе отметка
+            # выглядит как ничего не сделавшая.
+            "pending_until_close": bool(updated.is_open),
         },
         "metrics": computed.as_dict(),
     }
