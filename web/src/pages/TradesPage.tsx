@@ -7,7 +7,6 @@ import type {
   Feed,
   MarkedOut,
   MarkingMetrics,
-  SyncReport,
   Trade,
 } from '../lib/types'
 import { useToday } from './TodayPage'
@@ -59,20 +58,6 @@ export function TradesPage() {
   const active = connections.data?.connections.find((c) => c.is_active)
   const provideTags = Boolean(active?.capabilities.provides_tags)
   const isFake = active?.provider === 'fake'
-  const [syncError, setSyncError] = useState('')
-  const sync = useMutation({
-    mutationFn: () => api.post<SyncReport>('/sync'),
-    onSuccess: () => {
-      setSyncError('')
-      qc.invalidateQueries({ queryKey: ['trades'] })
-      qc.invalidateQueries({ queryKey: ['curve'] })
-      qc.invalidateQueries({ queryKey: ['marking-metrics'] })
-      qc.invalidateQueries({ queryKey: ['connections'] })
-    },
-    onError: (err) => {
-      setSyncError(err instanceof ApiError ? err.message : 'Сверка не прошла.')
-    },
-  })
   const [period, setPeriod] = useState<Period>('today')
   const [filter, setFilter] = useState<Filter>('all')
   const [cursor, setCursor] = useState<string | null>(null)
@@ -160,27 +145,6 @@ export function TradesPage() {
 
       {hasSource && isFake && (
         <DevPanel positions={Boolean(active?.capabilities.provides_positions)} />
-      )}
-
-      {hasSource && !isFake && (
-        <div className="card" style={{ padding: '14px 18px' }}>
-          <div
-            style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}
-          >
-            <button
-              onClick={() => sync.mutate()}
-              disabled={sync.isPending}
-              style={{ fontSize: 12, padding: '6px 12px' }}
-            >
-              {sync.isPending ? 'Сверяю…' : 'Сверить сейчас'}
-            </button>
-          </div>
-          {syncError && (
-            <div className="err" style={{ marginTop: 8 }}>
-              {syncError}
-            </div>
-          )}
-        </div>
       )}
 
       {period === 'today' && curve.data && <DayCurve curve={curve.data} />}
