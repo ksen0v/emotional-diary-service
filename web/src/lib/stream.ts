@@ -41,6 +41,8 @@ export type StreamEvent =
   | 'incident_opened'
   | 'streak_changed'
   | 'sync_state'
+  | 'telegram_linked'
+  | 'buddy_confirmed'
 
 export type OpenTradeTick = {
   trade_id: string
@@ -82,6 +84,10 @@ const INVALIDATES: Record<StreamEvent, string[]> = {
   incident_opened: ['today', 'incidents'],
   streak_changed: ['today', 'streak'],
   sync_state: ['today'],
+  // Привязка и согласие завершаются в боте, а не в браузере: без этого
+  // трейдер сидел бы перед формой с кодом и гадал, дошло ли.
+  telegram_linked: ['notify', 'rules'],
+  buddy_confirmed: ['notify', 'rules'],
 }
 
 // Пауза перед повторным соединением. Растёт до потолка: если сервер лежит,

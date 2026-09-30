@@ -23,9 +23,12 @@ import contextlib
 import datetime as dt
 import logging
 
+from eds.app import notify as app_notify
 from eds.app import pipeline, stream, ui_stream
 from eds.app.stream import StreamRegistry
+from eds.modules.notifications import service as notify_service
 from eds.modules.source import repo as source_repo
+from eds.platform import auth
 from eds.platform.db import session_factory
 from eds.platform.errors import AppError
 
@@ -46,6 +49,11 @@ RECONCILE_SEC = 10 * 60
 POSITIONS_SEC = 15
 # Пересмотр списка потоков: подключение могло появиться или смениться.
 STREAMS_SEC = 60
+# Надзор: напоминание о разметке и молчащий синк (ТЗ 6.5 и 9.6). Раз в минуту,
+# как в таблице планировщика Архитектуры ч.1 §7. Отдельной задачей, а не
+# довеском к сверке: сверка ходит в сеть и может задержаться, а напоминание
+# от сети не зависит вовсе.
+WATCH_SEC = 60
 
 
 class Scheduler:
@@ -59,7 +67,12 @@ class Scheduler:
         self.streams = streams or stream.registry
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
-        self.runs: dict[str, int] = {"reconcile": 0, "positions": 0, "streams": 0}
+        self.runs: dict[str, int] = {
+            "reconcile": 0,
+            "positions": 0,
+            "streams": 0,
+            "watch": 0,
+        }
         self.last_error: dict[str, str | None] = {}
 
     def start(self) -> None:
@@ -75,6 +88,10 @@ class Scheduler:
             asyncio.create_task(
                 self._loop("positions", POSITIONS_SEC, self._positions_all),
                 name="scheduler-positions",
+            ),
+            asyncio.create_task(
+                self._loop("watch", WATCH_SEC, self._watch_all),
+                name="scheduler-watch",
             ),
         ]
 
@@ -151,6 +168,28 @@ class Scheduler:
                     await s.commit()
                 except AppError as exc:
                     log.debug("позиции: %s", exc.message)
+
+    async def _watch_all(self) -> None:
+        """Напоминания и алерт о молчащем синке — тем, кто не смотрит в экран.
+
+        Плюс отложенные отключения доверенного лица: сутки из ТЗ 6.8 истекают
+        сами по себе, и если их никто не проверяет, контакт висит вечно.
+        """
+        now = dt.datetime.now(dt.UTC)
+        async with session_factory()() as s:
+            removed = await notify_service.apply_due_removals(s, now)
+            await s.commit()
+        if removed:
+            log.info("отключено доверенных лиц по истечении суток: %s", removed)
+
+        for user_id, _provider in await _active_users():
+            async with session_factory()() as s:
+                try:
+                    prefs = await auth.prefs_of(s, user_id)
+                    await app_notify.watch(s, user_id, prefs, now)
+                    await s.commit()
+                except AppError as exc:
+                    log.debug("надзор: %s", exc.message)
 
     def state(self) -> dict:
         return {

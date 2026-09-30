@@ -42,12 +42,15 @@ from eds.modules.incidents.models import (
     IncidentRow,
     LockRow,
 )
-from eds.platform import bus
+from eds.platform import auth, bus
 from eds.platform.errors import UNPROCESSABLE, AppError, not_found
 
 log = logging.getLogger("eds.incidents")
 
 ANSWER_MIN = 10
+
+# Пауза между просьбами подтвердить снятие (Архитектура ч.2 §3.7).
+BUDDY_COOLDOWN_SEC = 600
 
 # Вопросы разбора блокировки — из прототипа Locked.dc.html дословно.
 REVIEW_QUESTIONS: tuple[dict[str, str], ...] = (
@@ -104,6 +107,10 @@ async def open_from_firing(
         "snapshot": firing.snapshot,
         "had_lock": False,
         "alert": bool(firing.actions.get("alert")),
+        # Сигнал доверенному лицу — свойство этого срабатывания, а не текущей
+        # настройки правила: правило могли поправить через час, а инцидент
+        # обязан объяснять себя тем, что было правдой в свой момент.
+        "buddy": bool(firing.actions.get("buddy")),
         **(extra or {}),
     }
     if lock_wanted and shadow:
@@ -142,13 +149,9 @@ async def open_from_firing(
     )
 
     if firing.actions.get("alert"):
-        # Telegram ещё не подключён. Пока алерт идёт в лог: это честнее, чем
-        # очередь, из которой никто не читает.
-        log.info(
-            "алерт (Telegram ещё не подключён): %s — %s",
-            firing.rule_name,
-            firing.rule_text,
-        )
+        # Сам текст соберёт и отправит оркестрация по событию из шины:
+        # этот модуль про Telegram и шаблоны ничего не знает.
+        log.info("правило сработало: %s — %s", firing.rule_name, firing.rule_text)
 
     if not lock_wanted or shadow or running is not None:
         # Окна соблюдения нет, поэтому инцидент закрывается сразу: висеть
@@ -237,6 +240,7 @@ async def open_fact(
     shadow: bool,
     now: dt.datetime,
     alert: bool = True,
+    buddy: bool = False,
     outcome: str = BREACHED,
 ) -> IncidentRow | None:
     """Инцидент-факт: событие уже случилось, соблюдать нечего.
@@ -267,7 +271,13 @@ async def open_fact(
         day=day,
         code=code,
         rule_id=rule_id,
-        details={**details, "rule_name": rule_name, "rule_text": rule_text},
+        details={
+            **details,
+            "rule_name": rule_name,
+            "rule_text": rule_text,
+            "alert": alert,
+            "buddy": buddy,
+        },
         shadow=shadow,
     )
     if incident is None:
@@ -289,13 +299,7 @@ async def open_fact(
         dedup_key=f"incident:{incident.id}",
     )
     if alert:
-        # Telegram и сигнал доверенному лицу ещё не подключены. Пока алерт идёт
-        # в лог: это честнее, чем очередь, из которой никто не читает.
-        log.info(
-            "алерт (Telegram ещё не подключён): %s — %s",
-            CODE_TITLE.get(code, code),
-            rule_text,
-        )
+        log.info("триггер сработал: %s — %s", CODE_TITLE.get(code, code), rule_text)
     return incident
 
 
@@ -359,7 +363,10 @@ async def record_breach(
 
 
 def satisfied_of(
-    lock: LockRow, review_filled: bool, now: dt.datetime
+    lock: LockRow,
+    review_filled: bool,
+    now: dt.datetime,
+    buddy_confirmed: bool = False,
 ) -> dict[str, bool | None]:
     """Что из условий снятия выполнено.
 
@@ -375,9 +382,10 @@ def satisfied_of(
             else bool(lock.timer_until is not None and now >= lock.timer_until)
         ),
         "review": None if not requires.get("review") else review_filled,
-        # Подтверждение доверенного лица включить нельзя, пока нет Telegram: без
-        # подтверждённого контакта такое правило не сохраняется (ТЗ 6.8).
-        "buddy": None if not requires.get("buddy") else False,
+        # Подтверждение доверенного лица: раньше здесь стоял жёсткий False,
+        # потому что контакта с двойным согласием не существовало. Теперь
+        # это запись в `lock_confirmations`, сделанная кнопкой в боте.
+        "buddy": None if not requires.get("buddy") else buddy_confirmed,
     }
 
 
@@ -395,7 +403,8 @@ async def settle(
         return lock
 
     review = await repo.review_of(s, lock.id)
-    satisfied = satisfied_of(lock, review is not None, now)
+    confirmed = await repo.confirmation_of(s, lock.id)
+    satisfied = satisfied_of(lock, review is not None, now, confirmed is not None)
 
     if now >= lock.window_until:
         return await _finish(s, user_id, lock, EXPIRED, "day_boundary", now)
@@ -509,7 +518,8 @@ async def submit_review(
         s, lock.id, q1=cleaned["q1"], q2=cleaned["q2"], q3=cleaned["q3"]
     )
     lock = await settle(s, user_id, lock, now)
-    return lock, satisfied_of(lock, True, now)
+    confirmed = await repo.confirmation_of(s, lock.id)
+    return lock, satisfied_of(lock, True, now, confirmed is not None)
 
 
 # --- чтение ---
@@ -537,11 +547,15 @@ def lock_out(
     review_filled: bool,
     now: dt.datetime,
     breach: dict[str, Any] | None = None,
+    *,
+    buddy: dict[str, Any] | None = None,
+    tz: str = "UTC",
 ) -> dict[str, Any] | None:
     """Блокировка для экрана (Архитектура ч.2 §3.5 и §3.7)."""
     if lock is None:
         return None
-    satisfied = satisfied_of(lock, review_filled, now)
+    confirmed_at = (buddy or {}).get("confirmed_at")
+    satisfied = satisfied_of(lock, review_filled, now, confirmed_at is not None)
     words = unlock_words(lock.requires)
     return {
         "id": str(lock.id),
@@ -565,11 +579,125 @@ def lock_out(
             if words
             else "Условий снятия нет — блокировка кончится на границе дня"
         ),
-        # Доверенного лица ещё нет. null, а не пустой объект: пустой объект
-        # читался бы как «контакт есть, просто без имени».
-        "buddy": None,
+        # null, а не пустой объект: пустой объект читался бы как «контакт
+        # есть, просто без имени». Заполняется, только когда условие снятия
+        # «подтверждение друга» включено — иначе показывать нечего.
+        "buddy": buddy_block(lock, buddy, now, tz),
         "breach": breach,
     }
+
+
+def buddy_block(
+    lock: LockRow, buddy: dict[str, Any] | None, now: dt.datetime, tz: str
+) -> dict[str, Any] | None:
+    """Состояние подтверждения доверенного лица на экране блокировки.
+
+    Текст собирает сервер (ч.2 §1.3). Строка про границу дня стоит здесь
+    всегда, а не появляется, когда стало поздно: трейдер обязан знать худший
+    сценарий заранее — фолбэка на случай «друг не ответил» нет (ТЗ 6.6),
+    и блокировка тогда провисит до конца дня.
+    """
+    if not (lock.requires or {}).get("buddy"):
+        return None
+    contact = buddy or {}
+    confirmed_at = contact.get("confirmed_at")
+    requested_at = lock.buddy_requested_at
+    left = 0
+    if requested_at is not None:
+        left = max(0, BUDDY_COOLDOWN_SEC - int((now - requested_at).total_seconds()))
+    name = contact.get("display_name") or "доверенное лицо"
+
+    if confirmed_at is not None:
+        state, text = "confirmed", f"{name} подтвердил снятие."
+    elif requested_at is None:
+        state, text = "idle", f"Подтверждение от {name} ещё не запрошено."
+    else:
+        state = "waiting"
+        text = (
+            f"Ожидание подтверждения от {name} · "
+            f"отправлено в {_hhmm(requested_at, tz)}"
+        )
+    return {
+        "state": state,
+        "display_name": name,
+        "exists": bool(contact.get("exists")),
+        "requested_at": requested_at,
+        "confirmed_at": confirmed_at,
+        "cooldown_sec": left,
+        "can_request": confirmed_at is None and left == 0,
+        "text": text,
+        "fallback_text": (
+            "Если подтверждения не будет, блокировка снимется на границе дня."
+        ),
+    }
+
+
+async def buddy_view(s: AsyncSession, user_id: uuid.UUID, lock: LockRow) -> dict:
+    """Кто подтверждает снятие и подтвердил ли уже.
+
+    Имя контакта приходит через платформу: модуль incidents не знает, что
+    модуль notifications существует, — так же, как не знает про источник.
+    """
+    contact = await auth.buddy_contact(s, user_id)
+    confirmation = await repo.confirmation_of(s, lock.id)
+    return {
+        **contact,
+        "confirmed_at": confirmation.confirmed_at if confirmation else None,
+    }
+
+
+async def request_buddy(
+    s: AsyncSession, user_id: uuid.UUID, lock_id: uuid.UUID, now: dt.datetime
+) -> LockRow:
+    """Отметить, что у друга попросили подтверждение.
+
+    Само сообщение отправляет оркестрация: этот модуль про Telegram ничего
+    не знает. Здесь — только правила: просить можно у активной блокировки,
+    у которой это условие включено, и не чаще, чем раз в десять минут.
+    Cooldown не формальность: в тильте друга завалят просьбами за минуту,
+    и внешний контроль кончится на второй из них.
+    """
+    lock = await repo.lock_by_id(s, user_id, lock_id)
+    if lock is None:
+        raise not_found("Блокировка не найдена.")
+    if lock.state != ACTIVE:
+        raise AppError("lock_not_active", "Эта блокировка уже закрыта.", 409)
+    if not (lock.requires or {}).get("buddy"):
+        raise AppError(
+            "buddy_not_required",
+            "У этой блокировки нет условия «подтверждение доверенного лица».",
+            409,
+        )
+    if await repo.confirmation_of(s, lock.id) is not None:
+        raise AppError("already_done", "Подтверждение уже получено.", 409)
+    if lock.buddy_requested_at is not None:
+        left = BUDDY_COOLDOWN_SEC - int((now - lock.buddy_requested_at).total_seconds())
+        if left > 0:
+            raise AppError(
+                "too_many_attempts",
+                f"Просьба уже отправлена. Повторить можно через {left // 60 + 1} мин.",
+                429,
+                {"cooldown_sec": left},
+            )
+    lock.buddy_requested_at = now
+    await s.flush()
+    return lock
+
+
+async def confirm_by_buddy(
+    s: AsyncSession,
+    user_id: uuid.UUID,
+    lock: LockRow,
+    *,
+    contact_id: uuid.UUID,
+    chat_id: int | None,
+    now: dt.datetime,
+) -> LockRow:
+    """Друг нажал кнопку: записать подтверждение и снять, если больше нечего ждать."""
+    await repo.save_confirmation(
+        s, lock.id, contact_id=contact_id, chat_id=chat_id, now=now
+    )
+    return await settle(s, user_id, lock, now)
 
 
 def breach_of(incident: IncidentRow | None) -> dict[str, Any] | None:
@@ -582,7 +710,7 @@ def breach_of(incident: IncidentRow | None) -> dict[str, Any] | None:
     return {"trades": trades, "first": trades[0], "streak_text": None}
 
 
-def streak_burned_text(current: int) -> str:
+def streak_burned_text(current: int, buddy_name: str | None = None) -> str:
     """Вторая фраза красной полосы: что стало со стриком (SR-2, ТЗ 6.5).
 
     В прототипе она звучит как «Стрик 14 дней сгорел», и это почти правда —
@@ -592,39 +720,23 @@ def streak_burned_text(current: int) -> str:
     единицу без объяснения. Поэтому фраза говорит и про сгоревший стрик,
     и про то, когда это станет видно.
 
-    Третьей фразы прототипа — «Максиму отправлен сигнал» — здесь нет:
-    доверенное лицо появится вместе с Telegram, и до тех пор про отправленный
-    сигнал сервис врать не может.
+    Третья фраза прототипа — «Максиму отправлен сигнал» — появляется только
+    когда сигнал правда ушёл, то есть когда доверенное лицо есть и согласие
+    подтверждено. Без контакта фразы нет: обещать отправленный сигнал,
+    которого не было, — ровно то, от чего лечится экран.
     """
+    parts: list[str] = []
     if current <= 0:
-        return "Этот день в стрик не зачтётся."
-    days = _plural(current, "день", "дня", "дней")
-    return (
-        f"Стрик {current} {days} сгорел: этот день не зачтётся. "
-        "Счётчик в шапке обновится на границе дня."
-    )
-
-
-def retro_violation_text(day: dt.date, before: int, after: int) -> str:
-    """Уведомление «поздний тег закрыл прошлый день» (событие `retro_violation`).
-
-    Дефолт взят из прототипа `NotifyTexts.dc.html` дословно:
-    «Тег зафиксировал нарушение за {day}. Стрик пересчитан: {before} → {after}.»
-
-    В ТЗ 4.4 пример этого уведомления длиннее — он называет и сделку, и день,
-    и слово «день» после числа. Взят прототип: он показывает тот текст,
-    который лежит в настройках как редактируемый дефолт, а пример в ТЗ
-    объясняет смысл, а не задаёт строку. Расхождением это не считаю и
-    в раздел 5 не пишу — но называю здесь, чтобы потом, когда дефолты
-    переедут в `notify.templates`, выбор не пришлось делать заново.
-
-    Редактора текстов тут нет: он появится вместе с Telegram,
-    и до тех пор строка уходит в журнал сервиса.
-    """
-    return (
-        f"Тег зафиксировал нарушение за {date_text(day)}. "
-        f"Стрик пересчитан: {before} → {after}."
-    )
+        parts.append("Этот день в стрик не зачтётся.")
+    else:
+        days = _plural(current, "день", "дня", "дней")
+        parts.append(
+            f"Стрик {current} {days} сгорел: этот день не зачтётся. "
+            "Счётчик в шапке обновится на границе дня."
+        )
+    if buddy_name:
+        parts.append(f"{buddy_name} получил сигнал.")
+    return " ".join(parts)
 
 
 # Заголовок и подпись строки в ленте инцидентов собирает сервер. Причина та

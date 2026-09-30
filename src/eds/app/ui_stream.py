@@ -157,6 +157,11 @@ UI_TYPES: dict[str, str] = {
     ev.INCIDENTS_OPENED: "incident_opened",
     ev.STREAKS_CHANGED: "streak_changed",
     ev.SOURCE_STREAM_LOST: "sync_state",
+    # Привязка и согласие завершаются в боте, а не в браузере: экран настроек
+    # узнаёт об этом живым событием, иначе трейдер сидел бы перед формой
+    # с кодом и гадал, дошло ли.
+    ev.NOTIFY_TELEGRAM_LINKED: "telegram_linked",
+    ev.NOTIFY_CONTACT_CONFIRMED: "buddy_confirmed",
 }
 
 

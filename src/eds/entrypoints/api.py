@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import bot as app_bot
 from eds.app import consumers
 from eds.app.api import router as sync_router
 from eds.app.scheduler import Scheduler
@@ -23,6 +24,7 @@ from eds.contracts import events as ev
 from eds.modules.daybook.api import router as daybook_router
 from eds.modules.identity.api import router as identity_router
 from eds.modules.incidents.api import router as incidents_router
+from eds.modules.notifications.api import router as notify_router
 from eds.modules.rules.api import router as rules_router
 from eds.modules.source.api import router as source_router
 from eds.modules.trades.api import router as trades_router
@@ -63,9 +65,16 @@ async def lifespan(app: FastAPI):
     scheduler = Scheduler()
     scheduler.start()
     app.state.scheduler = scheduler
+
+    # Бот — такая же долгоживущая корутина, как поток к бирже. Токена может
+    # ещё не быть: тогда он ждёт, пока его вставят, и поднимается по событию,
+    # а не по перезапуску процесса.
+    app_bot.runner.start()
+    app.state.bot = app_bot.runner
     try:
         yield
     finally:
+        await app_bot.runner.stop()
         await scheduler.stop()
         for c in running:
             c.stop()
@@ -86,6 +95,7 @@ app.include_router(trades_router)
 app.include_router(daybook_router)
 app.include_router(rules_router)
 app.include_router(incidents_router)
+app.include_router(notify_router)
 app.include_router(sync_router)
 
 
@@ -105,6 +115,9 @@ async def health() -> dict:
         "background": (
             app.state.scheduler.state() if hasattr(app.state, "scheduler") else None
         ),
+        # Состояние бота — на страницу состояния. Приёмка этого шага
+        # проверяется часом работы, и смотреть на него надо не в логе.
+        "bot": app_bot.runner.snapshot(),
         "ok": bool(database["connected"] and database["revision"]),
     }
 

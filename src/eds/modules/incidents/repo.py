@@ -15,6 +15,7 @@ from eds.modules.incidents.models import (
     KEPT,
     OPEN,
     IncidentRow,
+    LockConfirmationRow,
     LockReviewRow,
     LockRow,
 )
@@ -133,6 +134,39 @@ async def save_review(
     s.add(row)
     await s.flush()
     return row
+
+
+async def confirmation_of(
+    s: AsyncSession, lock_id: uuid.UUID
+) -> LockConfirmationRow | None:
+    res = await s.execute(
+        select(LockConfirmationRow).where(LockConfirmationRow.lock_id == lock_id)
+    )
+    return res.scalar_one_or_none()
+
+
+async def save_confirmation(
+    s: AsyncSession,
+    lock_id: uuid.UUID,
+    *,
+    contact_id: uuid.UUID,
+    chat_id: int | None,
+    now: dt.datetime,
+) -> LockConfirmationRow:
+    """Подтверждение друга. Повтор ничего не добавляет — ключ по блокировке."""
+    existing = await confirmation_of(s, lock_id)
+    if existing is not None:
+        return existing
+    row = LockConfirmationRow(
+        lock_id=lock_id, contact_id=contact_id, chat_id=chat_id, confirmed_at=now
+    )
+    s.add(row)
+    await s.flush()
+    return row
+
+
+async def has_active_lock(s: AsyncSession, user_id: uuid.UUID) -> bool:
+    return await active_lock(s, user_id) is not None
 
 
 async def breach_counts(

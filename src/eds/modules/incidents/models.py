@@ -9,7 +9,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Integer, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -96,6 +96,28 @@ class LockRow(Base):
     state: Mapped[str] = mapped_column(Text)
     lifted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     lift_reason: Mapped[str | None] = mapped_column(Text)
+    # Когда у друга попросили подтверждение. Нужно для cooldown: друга нельзя
+    # завалить просьбами в тильте (Архитектура ч.2 §3.7).
+    buddy_requested_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
+class LockConfirmationRow(Base):
+    """Подтверждение снятия доверенным лицом (ТЗ 6.6).
+
+    Первичный ключ по блокировке — это и есть идемпотентность: друг может
+    нажать кнопку дважды, Telegram может прислать нажатие повторно, а запись
+    появится одна.
+    """
+
+    __tablename__ = "lock_confirmations"
+    __table_args__ = {"schema": SCHEMA}
+
+    lock_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    contact_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True))
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    confirmed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
 
 
 class LockReviewRow(Base):

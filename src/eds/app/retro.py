@@ -24,8 +24,8 @@
 - **Сегодняшнего дня.** Поздний тег не трогает ни счётчики сегодня, ни
   допуск, ни активную блокировку. Пересчёт идёт от дня сделки и до
   вчерашнего включительно — сегодняшний день в серии не участвует вообще.
-- **Отправки уведомления.** Текст собирается здесь и уходит в журнал.
-  Telegram ещё не подключён.
+- **Правки текста уведомления.** Текст собирает шаблон трейдера
+  (`retro_violation`), а этот файл даёт ему числа: день, было и стало.
 
 **Что важно знать про стрик, потому что это неочевидно и легко прочитать
 как ошибку.** День с поздним тегом не зачитывается **в обеих ветках**, а не
@@ -43,6 +43,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import notify as app_notify
 from eds.app import streaks as app_streaks
 from eds.modules.incidents import service as incidents
 from eds.modules.incidents.models import BREACHED, CODE_RETRO_TAG, KEPT
@@ -248,10 +249,18 @@ async def run(
 
     before, after = await recount(s, user_id, prefs, day, today=today)
     if before != after:
-        # Telegram ещё не подключён. Пока текст уходит в журнал: это честнее,
-        # чем очередь, из которой никто не читает.
-        log.info(
-            "уведомление retro_violation (Telegram ещё не подключён): %s",
-            incidents.retro_violation_text(day, before, after),
+        await app_notify.send(
+            s,
+            user_id,
+            "retro_violation",
+            {
+                "day": app_notify.day_text(day),
+                "streak_before": before,
+                "streak_after": after,
+            },
+            # Один раз на пересчёт этого дня: сверка может пройти ещё раз,
+            # а новость у неё та же самая.
+            dedup_key=f"retro:{user_id}:{day.isoformat()}:{before}:{after}",
+            prefs=prefs,
         )
     return tags

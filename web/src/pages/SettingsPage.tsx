@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import { ApiError, api } from '../lib/api'
 import type { Me, SessionRow, Settings, SettingsPatched } from '../lib/types'
 import { MarkingCard } from '../ui/MarkingCard'
+import { NotifyTexts } from '../ui/NotifyTexts'
 import { SourceCard } from '../ui/SourceCard'
+import { TelegramCard } from '../ui/TelegramCard'
 
 const TIMEZONES = [
   'Europe/Moscow',
@@ -38,8 +40,21 @@ function toDraft(s: Settings): Draft {
   }
 }
 
+// Две вкладки, как в прототипе `Settings.dc.html`: подключение с контролем
+// и тексты уведомлений. Раздел один, потому что и то, и другое настраивается
+// один раз и редко, а разносить их по сайдбару значило бы добавить пункт
+// ради одного экрана.
+const TABS = [
+  { key: 'main', name: 'Подключение и контроль' },
+  { key: 'texts', name: 'Тексты уведомлений' },
+] as const
+
+type Tab = (typeof TABS)[number]['key']
+
+
 export function SettingsPage({ me }: { me: Me }) {
   const qc = useQueryClient()
+  const [tab, setTab] = useState<Tab>('main')
   const [draft, setDraft] = useState<Draft>(toDraft(me.settings))
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -91,6 +106,32 @@ export function SettingsPage({ me }: { me: Me }) {
   const label = { width: 210, fontSize: 13, color: 'var(--dim)' } as const
 
   return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        flexGrow: 1,
+        minHeight: 0,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {TABS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setTab(item.key)}
+            className={tab === item.key ? 'primary' : ''}
+            style={{ fontSize: 13, padding: '6px 12px' }}
+          >
+            {item.name}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'texts' && <NotifyTexts />}
+
+      {tab === 'main' && (
     <div style={{ display: 'flex', gap: 20, flexGrow: 1, minHeight: 0 }}>
       {/* Две колонки, как в прототипе Settings.dc.html: слева подключение
           источника и словарь тегов, справа всё остальное. Каждая колонка
@@ -250,6 +291,8 @@ export function SettingsPage({ me }: { me: Me }) {
           </div>
         </div>
 
+        <TelegramCard me={me} />
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <button
             className="primary"
@@ -307,6 +350,8 @@ export function SettingsPage({ me }: { me: Me }) {
           </div>
         </div>
       </div>
+    </div>
+      )}
     </div>
   )
 }

@@ -17,12 +17,12 @@ import datetime as dt
 import httpx
 import pytest
 
+from eds.app import notify as app_notify
 from eds.app import retro
 from eds.app import streaks as app_streaks
 from eds.contracts.streaks import DayMark
 from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.identity import repo as identity_repo
-from eds.modules.incidents import service as incidents_service
 from eds.modules.streaks import rules as streak_rules
 from eds.platform import auth, db
 from tests.test_identity import EMAIL
@@ -283,8 +283,18 @@ async def test_recount_window_starts_at_the_changed_day(
 def test_retro_notification_text_matches_the_prototype() -> None:
     """Дефолт события `retro_violation` — из прототипа NotifyTexts.dc.html.
 
-    Текст собирает сервер: та же строка уйдёт в Telegram на шаге 13, и
-    собранная во второй раз на клиенте она разъедётся.
+    Текст собирает сервер из шаблона трейдера, а ретропроверка даёт ему числа.
+    Проверяется дефолт: именно его видит тот, кто ни разу не открывал раздел
+    текстов, а таких большинство.
     """
-    text = incidents_service.retro_violation_text(dt.date(2026, 9, 8), 14, 1)
+    from eds.modules.notifications import templates
+
+    text = templates.render(
+        templates.BY_KEY["retro_violation"].default,
+        {
+            "day": app_notify.day_text(dt.date(2026, 9, 8)),
+            "streak_before": 14,
+            "streak_after": 1,
+        },
+    )
     assert text == "Тег зафиксировал нарушение за 8 сентября. Стрик пересчитан: 14 → 1."

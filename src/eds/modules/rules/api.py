@@ -151,6 +151,38 @@ def _conditions(items: list[ConditionIn]) -> list[dict[str, Any]]:
     return [item.model_dump(exclude_none=False) for item in items]
 
 
+async def _buddy_confirmed(s: AsyncSession, user_id: uuid.UUID) -> bool:
+    return bool((await auth.buddy_contact(s, user_id)).get("confirmed"))
+
+
+async def _alert_note(
+    s: AsyncSession, user_id: uuid.UUID, prefs: auth.UserPrefs
+) -> str:
+    """Куда уходит алерт сегодня.
+
+    Фраза правила говорит «придёт алерт в Telegram» — она описывает правило
+    и уйдёт в инцидент как текст на момент срабатывания. А экран обязан
+    сказать, что происходит сейчас: иначе трейдер будет ждать сообщение,
+    которого не будет.
+    """
+    if prefs.shadow_mode:
+        return (
+            "Режим наблюдения: правило посчитается и инцидент запишется, "
+            "но уведомление не отправится."
+        )
+    if not prefs.telegram_enabled:
+        return (
+            "Уведомления в Telegram выключены в настройках: "
+            "алерт будет виден только на экране."
+        )
+    state = await auth.notify_state(s, user_id)
+    if not state.get("bot_installed"):
+        return "Токен бота не вставлен: алерт пишется в журнал сервиса."
+    if not state.get("linked"):
+        return "Telegram не привязан: алерт пишется в журнал сервиса."
+    return "Алерт придёт в Telegram."
+
+
 @router.get("/rules/metrics", response_model=MetricsOut)
 async def metrics(
     user: auth.CurrentUser = Depends(auth.current_user),
@@ -163,7 +195,15 @@ async def metrics(
     знать, что модуль source существует.
     """
     caps = await auth.source_capabilities(s, user.user_id)
-    return MetricsOut(**service.metrics_catalog(caps, prefs.significance_pct))
+    buddy = await auth.buddy_contact(s, user.user_id)
+    return MetricsOut(
+        **service.metrics_catalog(
+            caps,
+            prefs.significance_pct,
+            buddy=buddy,
+            alert_note=await _alert_note(s, user.user_id, prefs),
+        )
+    )
 
 
 @router.get("/rules", response_model=RulesOut)
@@ -173,12 +213,14 @@ async def rules(
     s: AsyncSession = Depends(db.session),
 ) -> RulesOut:
     caps = await auth.source_capabilities(s, user.user_id)
+    buddy = await auth.buddy_contact(s, user.user_id)
     data = await service.listing(
         s,
         user.user_id,
         caps,
         today=trading_day(dt.datetime.now(dt.UTC), prefs.timezone, prefs.day_cutoff),
         shadow_mode=prefs.shadow_mode,
+        buddy_ready=bool(buddy.get("confirmed")),
     )
     # Чтение, которое пишет: досоздаёт системные правила, если их нет.
     await s.commit()
@@ -201,6 +243,7 @@ async def create_rule(
         actions=body.actions.model_dump(),
         unlock=body.unlock.model_dump(),
         capabilities=caps,
+        buddy_confirmed=await _buddy_confirmed(s, user.user_id),
     )
     await s.commit()
     return RuleOut(**service.rule_out(row))
@@ -222,6 +265,7 @@ async def preview_rule(
             conditions=_conditions(body.conditions),
             actions=body.actions,
             unlock=body.unlock,
+            buddy_confirmed=await _buddy_confirmed(s, user.user_id),
         )
     )
 
@@ -245,7 +289,14 @@ async def patch_rule(
     if body.unlock is not None:
         patch_body["unlock"] = body.unlock
 
-    row = await service.patch(s, user.user_id, rule_id, patch_body, caps)
+    row = await service.patch(
+        s,
+        user.user_id,
+        rule_id,
+        patch_body,
+        caps,
+        buddy_confirmed=await _buddy_confirmed(s, user.user_id),
+    )
     await s.commit()
     return RuleOut(**service.rule_out(row))
 

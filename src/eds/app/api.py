@@ -15,11 +15,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eds.app import diary, pipeline, today, ui_stream
+from eds.app import notify as app_notify
 from eds.app import streaks as app_streaks
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
 from eds.modules.incidents import repo as incidents_repo
+from eds.modules.incidents import service as incidents_service
 from eds.modules.streaks import repo as streaks_repo
 from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import api as trades_api
@@ -358,6 +360,44 @@ async def live_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/locks/{lock_id}/request-buddy")
+async def request_buddy(
+    lock_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    """Попросить доверенное лицо подтвердить снятие (Архитектура ч.2 §3.7).
+
+    Эндпоинт живёт в оркестрации, а не в модуле incidents, потому что задевает
+    два модуля: правила просьбы принадлежат блокировке, а само сообщение —
+    уведомлениям. Повтор до истечения паузы отвечает `429`: друга нельзя
+    завалить просьбами в тильте.
+    """
+    now = dt.datetime.now(dt.UTC)
+    lock = await incidents_service.request_buddy(s, user.user_id, lock_id, now)
+    await app_notify.request_buddy_confirm(s, user.user_id, lock, prefs)
+    await s.commit()
+    return {
+        "requested_at": lock.buddy_requested_at,
+        "cooldown_sec": incidents_service.BUDDY_COOLDOWN_SEC,
+        # Тот же блок, что на экране блокировки: ответ на своё же действие
+        # обязан выглядеть как состояние, в которое оно привело, иначе экран
+        # соберёт его по-своему и однажды разойдётся с сервером.
+        "buddy": incidents_service.buddy_block(
+            lock,
+            await incidents_service.buddy_view(s, user.user_id, lock),
+            now,
+            prefs.timezone,
+        ),
+        "message": (
+            "Просьба отправлена. Если подтверждения не будет, блокировка "
+            "снимется на границе дня."
+        ),
+    }
 
 
 @router.post("/positions/refresh")

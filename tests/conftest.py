@@ -78,6 +78,25 @@ WIPE = (
     "DELETE FROM source.tags WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.accounts WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM source.connections WHERE user_id IN (SELECT id FROM test_users)",
+    # Уведомления: очередь, тексты, контакт и привязка. Плюс подтверждения
+    # снятия — они висят на блокировке, поэтому чистятся раньше неё.
+    #
+    # Здесь чистится не только «своё», но и осиротевшее: у `notify.outbound`
+    # ключ повтора уникален на всю таблицу, поэтому строка от удалённого
+    # пользователя молча запрещает поставить такое же уведомление снова —
+    # и следующий прогон падает на пустом месте.
+    "DELETE FROM notify.outbound WHERE user_id IN (SELECT id FROM test_users)"
+    " OR user_id NOT IN (SELECT id FROM identity.users)",
+    "DELETE FROM notify.templates WHERE user_id IN (SELECT id FROM test_users)"
+    " OR user_id NOT IN (SELECT id FROM identity.users)",
+    "DELETE FROM notify.contacts WHERE user_id IN (SELECT id FROM test_users)"
+    " OR user_id NOT IN (SELECT id FROM identity.users)",
+    "DELETE FROM notify.telegram_links WHERE user_id IN (SELECT id FROM test_users)"
+    " OR user_id NOT IN (SELECT id FROM identity.users)",
+    # Токен бота — одна строка на сервис, не на пользователя: чистится целиком.
+    "DELETE FROM notify.bot",
+    "DELETE FROM incidents.lock_confirmations WHERE lock_id IN ("
+    " SELECT id FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users))",
     "DELETE FROM incidents.lock_reviews WHERE lock_id IN ("
     " SELECT id FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users))",
     "DELETE FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users)",

@@ -17,7 +17,9 @@ from eds.contracts.trading_time import day_ends_at, trading_day
 from eds.modules.daybook import periods
 from eds.modules.daybook import repo as daybook_repo
 from eds.modules.daybook import service as daybook
+from eds.modules.incidents import repo as incidents_repo
 from eds.modules.incidents import service as incidents
+from eds.modules.incidents.models import CODE_LOCK_BREACHED
 from eds.modules.source import repo as source_repo
 from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import repo as trades_repo
@@ -69,8 +71,12 @@ async def build(
     # и склеить два факта в одну фразу может только оркестрация.
     lock_block = live["lock"]
     if lock_block is not None and lock_block.get("breach"):
+        # И третья фраза прототипа — «Максиму отправлен сигнал», — но только
+        # если он правда ушёл: контакт мог не подтвердить согласие, сигнал
+        # мог быть выключен у правила, мог быть включён режим наблюдения.
         lock_block["breach"]["streak_text"] = incidents.streak_burned_text(
-            streak["current"]
+            streak["current"],
+            await _buddy_signal_name(s, user_id, day, lock_block["id"]),
         )
 
     state = daybook.state_of(
@@ -186,6 +192,25 @@ async def _yesterday(s: AsyncSession, user_id: uuid.UUID, today_day: dt.date) ->
         "admission": row.admission if row else None,
         "review_state": row.review_state if row else "none",
     }
+
+
+async def _buddy_signal_name(
+    s: AsyncSession, user_id: uuid.UUID, day: dt.date, lock_id: str
+) -> str | None:
+    """Имя доверенного лица, если сигнал по этому нарушению ушёл.
+
+    Ищем инцидент SR-2, связанный с этой блокировкой: сигнал уходит по нему,
+    а не по той блокировке, которую нарушили.
+    """
+    from eds.app import notify as app_notify
+
+    for row in await incidents_repo.incidents_of_day(s, user_id, day):
+        if row.code != CODE_LOCK_BREACHED:
+            continue
+        if (row.details or {}).get("breached_lock_id") != lock_id:
+            continue
+        return await app_notify.buddy_signal_name(s, user_id, row.id)
+    return None
 
 
 async def _source_block(s: AsyncSession, connection) -> dict | None:

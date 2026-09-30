@@ -71,9 +71,11 @@ async def test_metrics_dictionary_follows_active_source(
     assert out["significance_pct"] == "0.50"
     assert out["max_conditions"] == 5
     # Доверенного лица ещё нет — экран обязан сказать об этом, а не молча
-    # предлагать настройку, которая никому ничего не отправит.
+    # предлагать настройку, которая никому ничего не отправит. Причина
+    # теперь называется настоящая: не «Telegram появится позже», а «контакта
+    # нет», потому что канал уже есть, а согласия ещё нет.
     assert out["buddy_available"] is False
-    assert "Telegram" in out["buddy_note"]
+    assert "согласие" in out["buddy_note"] or "Доверенного лица нет" in out["buddy_note"]
     # Номера шага в пользовательском тексте быть не должно: порядок шагов
     # меняется, а экран остаётся. Проверка здесь же, потому что именно этот
     # текст дважды устаревал вместе с планом.
@@ -147,7 +149,12 @@ async def test_system_rule_says_what_of_it_does_not_work_yet(
 
     system = {r["system_code"]: r for r in out["rules"] if r["kind"] == "system"}
     for code, rule in system.items():
-        assert rule["pending"] == sysrules.pending_of(code), code
+        # Готовность доверенного лица — свойство пользователя, а не кода,
+        # поэтому она приходит в `pending_of` аргументом: у этого
+        # пользователя контакта нет.
+        assert rule["pending"] == sysrules.pending_of(
+            code, rule["actions"], buddy_ready=False
+        ), code
 
     # У своих правил такого поля нет: они срабатывают целиком.
     await connect_fake(app_client)
@@ -168,23 +175,35 @@ async def test_each_unfinished_thing_has_its_own_flag(
 
     Шаг 11 — обратная проверка того же правила. Ретропроверка позднего тега
     заработала, `RETRO_ACTIVE` поднялся, и предупреждение с карточки SR-1
-    ушло **само**, потому что висело именно на нём. Предупреждение SR-2 и
-    SR-3 про сигнал доверенному лицу при этом осталось: у него свой флаг и
-    свой шаг (13).
+    ушло **само**, потому что висело именно на нём.
+
+    Шаг «Telegram и тексты» — третья проверка. Флага `BUDDY_ACTIVE` больше
+    нет совсем: механика есть, и «готово ли» перестало быть свойством кода.
+    Теперь это свойство пользователя — есть ли у него подтверждённый контакт,
+    — и предупреждение считается от него. Флаг, оставленный «на всякий
+    случай», к этому моменту соврал бы дважды.
     """
     from eds.modules.rules import system as sysrules
 
     assert sysrules.SYSTEM_ACTIVE is True
     assert sysrules.RETRO_ACTIVE is True
-    assert sysrules.BUDDY_ACTIVE is False
+    assert not hasattr(sysrules, "BUDDY_ACTIVE")
+
+    signal_on = {"buddy": True}
+    signal_off = {"buddy": False}
+
     # SR-1 работает целиком: обе ветки тега — живая и поздняя.
-    assert sysrules.pending_of(sysrules.SR1) is None
-    # У SR-2 и SR-3 своё — сигнал доверенному лицу (шаг 13). ТЗ 6.5 его им
-    # даёт, механика его не делает, и экран обязан сказать об этом сам.
-    assert sysrules.pending_of(sysrules.SR2) is not None
-    assert sysrules.pending_of(sysrules.SR3) is not None
+    assert sysrules.pending_of(sysrules.SR1, signal_off, buddy_ready=True) is None
+    # У SR-2 и SR-3 сигнал другу включён по ТЗ 6.5. Пока согласия нет, он
+    # не уйдёт — и карточка говорит об этом, а не молчит.
+    assert sysrules.pending_of(sysrules.SR2, signal_on, buddy_ready=False) is not None
+    assert sysrules.pending_of(sysrules.SR3, signal_on, buddy_ready=False) is not None
+    # Контакт подтвердил согласие — предупреждение уходит само.
+    assert sysrules.pending_of(sysrules.SR2, signal_on, buddy_ready=True) is None
+    # Трейдер выключил сигнал сам — предупреждать не о чем.
+    assert sysrules.pending_of(sysrules.SR2, signal_off, buddy_ready=False) is None
     # У SR-4 не готово ничего: он работает целиком.
-    assert sysrules.pending_of(sysrules.SR4) is None
+    assert sysrules.pending_of(sysrules.SR4, signal_off, buddy_ready=True) is None
 
 
 async def test_system_rules_are_not_duplicated(app_client: httpx.AsyncClient) -> None:
@@ -622,11 +641,12 @@ async def test_every_system_rule_can_be_saved(
 ) -> None:
     """Каждый системный триггер должен быть сохраняем как есть.
 
-    SR-2 и SR-3 лежали в базе с `actions.buddy = true`, которого собственная
-    валидация не пропускает: подтверждённого контакта нет до шага 13. Правило
-    в таком виде невозможно сохранить вообще — кнопка «Сохранить» серая, что
-    бы трейдер ни переключил. Проверяется на предпросмотре, потому что именно
-    он решает, доступна ли кнопка.
+    SR-2 и SR-3 лежат в базе с `actions.buddy = true` — так требует ТЗ 6.5, —
+    а подтверждённого контакта у нового пользователя нет. Проверка «нельзя
+    без подтверждённого контакта» защищает правила, которые собирает трейдер;
+    применённая к системному триггеру, она делает его несохраняемым вообще:
+    кнопка «Сохранить» серая, что бы трейдер ни переключил. Проверяется на
+    предпросмотре, потому что именно он решает, доступна ли кнопка.
     """
     await register(app_client)
     out = await rules(app_client)
@@ -672,9 +692,18 @@ async def test_system_rule_declares_only_what_it_does(
     assert by_code["SR-1"]["actions"]["lock"]["enabled"] is True
     assert "заблокируется до конца торгового дня" in by_code["SR-1"]["human_text"]
 
-    # Сигнал доверенному лицу выключен у всех: контакта нет до шага 13.
-    assert all(not r["actions"]["buddy"] for r in by_code.values())
-    assert all("уйдёт сигнал" not in r["human_text"] for r in by_code.values())
+    # Сигнал доверенному лицу включён у SR-2 и SR-3 (ТЗ 6.5) и выключен
+    # у SR-1 и SR-4, которым он по ТЗ не положен. Фраза правила называет
+    # его там, где он есть: иначе SR-2 и SR-3 выглядят безобиднее, чем есть.
+    assert by_code["SR-2"]["actions"]["buddy"] is True
+    assert by_code["SR-3"]["actions"]["buddy"] is True
+    assert by_code["SR-1"]["actions"]["buddy"] is False
+    assert by_code["SR-4"]["actions"]["buddy"] is False
+    assert "уйдёт сигнал" in by_code["SR-2"]["human_text"]
+    assert "уйдёт сигнал" not in by_code["SR-1"]["human_text"]
+    # Контакта у этого пользователя нет, поэтому карточка говорит, что
+    # сигнал не уйдёт. Обещать отправку, которой не будет, нельзя.
+    assert by_code["SR-2"]["pending"]["short"] == "сигнал другу не уйдёт"
 
     # Сгоревший стрик — последствие, а не действие: тумблера у него нет,
     # но во фразе он назван, иначе SR-2 и SR-3 выглядят безобидно.

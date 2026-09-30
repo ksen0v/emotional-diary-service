@@ -18,6 +18,7 @@ def test_event_names_are_namespaced() -> None:
             "rules",
             "incidents",
             "streaks",
+            "notify",
             "platform",
         }, f"неизвестное пространство имён: {name}"
 

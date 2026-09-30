@@ -53,6 +53,12 @@ type Draft = {
   pending: { short: string; text: string } | null
 }
 
+// Экран блокировки ещё не умеет показывать ожидание подтверждения: состояния
+// нет в прототипе `Locked.dc.html`, и Влад дорисовывает его. До тех пор
+// условие снятия «подтверждение доверенного лица» не включается — сигнал
+// другу при этом работает полностью, это разные вещи.
+const BUDDY_UNLOCK_READY = false
+
 const UNLOCK_NOTE: Record<string, string> = {
   review: 'три вопроса о случившемся',
   buddy: 'кнопка в Telegram',
@@ -381,9 +387,9 @@ function Builder({
   const canSave = Boolean(preview?.valid) && !nameEmpty
   // Что у системного триггера можно изменить прямо сейчас. Список
   // разрешённых полей — не то же самое, что доступных: единственный параметр
-  // SR-2 и SR-3 это сигнал доверенному лицу, а его нельзя включить, пока нет Telegram.
-  // Без этой строки трейдер щёлкает по заблокированным тумблерам и не
-  // понимает, почему ничего не меняется.
+  // SR-2 и SR-3 это сигнал доверенному лицу, а включить его можно только
+  // когда контакт подтвердил согласие. Без этой строки трейдер щёлкает
+  // по заблокированным тумблерам и не понимает, почему ничего не меняется.
   const nothingToTune =
     isSystem &&
     (draft.editable ?? []).every(
@@ -540,14 +546,22 @@ function Builder({
           {dict.unlock_conditions.map((cond) => {
             const on = draft.unlock[cond.key]
             const needsContact = Boolean(cond.requires_contact) && !dict.buddy_available
+            // Условие «подтверждение друга» держится выключенным, пока на
+            // экране блокировки нет состояния ожидания: включить его сейчас
+            // значило бы дать трейдеру блокировку, которую неоткуда снять —
+            // просьбу подтвердить отправлять нечем. Снимается одной строкой,
+            // когда экран будет собран.
+            const waitsForScreen = cond.key === 'buddy' && !BUDDY_UNLOCK_READY
             const note =
               cond.key === 'timer'
                 ? draft.minutes === ''
                   ? 'до границы дня'
                   : `выждать ${draft.minutes} ${plural(Number(draft.minutes), 'минуту', 'минуты', 'минут')}`
-                : needsContact
-                  ? dict.buddy_note
-                  : UNLOCK_NOTE[cond.key]
+                : waitsForScreen
+                  ? 'экран ожидания подтверждения ещё собирается'
+                  : needsContact
+                    ? dict.buddy_note
+                    : UNLOCK_NOTE[cond.key]
             return (
               <div
                 key={cond.key}
@@ -566,7 +580,12 @@ function Builder({
                 <div style={{ marginLeft: 'auto' }}>
                   <Pill
                     on={on}
-                    disabled={!draft.lockOn || needsContact || !can(draft, 'unlock')}
+                    disabled={
+                      !draft.lockOn ||
+                      needsContact ||
+                      waitsForScreen ||
+                      !can(draft, 'unlock')
+                    }
                     onClick={() =>
                       patch({ unlock: { ...draft.unlock, [cond.key]: !on } })
                     }
@@ -634,9 +653,10 @@ function Builder({
 
       {nothingToTune && (
         <div className="hint">
-          Настраивать здесь пока нечего: единственный параметр этого триггера —
-          сигнал доверенному лицу, а он появится вместе с Telegram. Условие и
-          последствия заданы в сервисе и не отключаются (ТЗ 6.5).
+          Настраивать здесь нечего, пока нет доверенного лица: единственный
+          параметр этого триггера — сигнал ему. Добавь контакт в{' '}
+          <Link to="/settings">Настройках</Link>. Условие и последствия заданы
+          в сервисе и не отключаются (ТЗ 6.5).
         </div>
       )}
       {problem && !empty && (

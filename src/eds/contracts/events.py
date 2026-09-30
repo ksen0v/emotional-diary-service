@@ -43,6 +43,17 @@ INCIDENTS_RESOLVED_RETRO: Final = "incidents.resolved_retro"
 # --- streaks ---
 STREAKS_CHANGED: Final = "streaks.changed"
 
+# --- notifications ---
+# Токен бота вставили, заменили или убрали. Событием, а не проверкой по
+# расписанию: вставленный токен должен поднимать бота сразу — то же решение,
+# что с подключением источника на шаге «Живое обновление».
+NOTIFY_BOT_CHANGED: Final = "notify.bot_changed"
+# Трейдер отправил боту код: аккаунт привязан. Нужно экрану настроек — он
+# узнаёт об этом живым событием, а не опросом.
+NOTIFY_TELEGRAM_LINKED: Final = "notify.telegram_linked"
+# Доверенное лицо нажало «Подтверждаю» — двойное согласие получено (ТЗ 6.8).
+NOTIFY_CONTACT_CONFIRMED: Final = "notify.contact_confirmed"
+
 # --- служебное, только для шага 0 ---
 PLATFORM_TEST_PING: Final = "platform.test_ping"
 
@@ -64,5 +75,8 @@ ALL: Final = (
     INCIDENTS_LOCK_BREACHED,
     INCIDENTS_RESOLVED_RETRO,
     STREAKS_CHANGED,
+    NOTIFY_BOT_CHANGED,
+    NOTIFY_TELEGRAM_LINKED,
+    NOTIFY_CONTACT_CONFIRMED,
     PLATFORM_TEST_PING,
 )

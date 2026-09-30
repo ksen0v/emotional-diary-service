@@ -244,3 +244,17 @@ async def update_settings(
     row = await repo.save_settings(s, current, clean)
     # История не пересчитывается (решение ч.1): trading_day фиксируется при приёме.
     return row, (TIME_NOTICE if time_changed else None)
+
+
+async def trader_name(s: AsyncSession, user_id: uuid.UUID) -> str:
+    """Как назвать трейдера в сообщении доверенному лицу.
+
+    Отдельного имени в ТЗ нет: у пользователя есть только почта. Берём часть
+    до собаки — это лучше, чем присылать другу «Пользователь» или всю почту
+    целиком. Трейдер в любой момент перепишет текст сигнала своими словами,
+    и тогда подстановка ему не понадобится вовсе.
+    """
+    row = await repo.user_by_id(s, user_id)
+    if row is None:  # pragma: no cover — пользователь удалён посреди запроса
+        return ""
+    return row.email.split("@", 1)[0]

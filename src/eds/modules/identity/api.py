@@ -61,6 +61,8 @@ async def _resolve_prefs(s: AsyncSession, user_id: uuid.UUID) -> auth.UserPrefs:
         shadow_mode=row.shadow_mode,
         pass_score=row.pass_score,
         min_score=row.min_score,
+        telegram_enabled=row.telegram_enabled,
+        trader_name=await service.trader_name(s, user_id),
     )
 
 

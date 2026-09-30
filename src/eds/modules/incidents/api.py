@@ -17,6 +17,18 @@ from eds.platform.errors import AppError
 
 router = APIRouter(prefix="/api/v1", tags=["incidents"])
 
+
+# --- резолвер для платформы ---
+# Отключить доверенное лицо во время активного инцидента нельзя (ТЗ 6.8),
+# а решает это модуль notifications, который про блокировки не знает.
+
+
+async def _resolve_active_lock(s: AsyncSession, user_id: uuid.UUID) -> bool:
+    return await repo.has_active_lock(s, user_id)
+
+
+auth.register_incidents(_resolve_active_lock)
+
 LIMIT_MAX = 200
 
 
@@ -133,6 +145,7 @@ async def incidents(
 @router.get("/locks/active", response_model=ActiveLockOut)
 async def active_lock(
     user: auth.CurrentUser = Depends(auth.current_user),
+    prefs: auth.UserPrefs = Depends(auth.current_prefs),
     s: AsyncSession = Depends(db.session),
 ) -> ActiveLockOut:
     """Активная блокировка или null.
@@ -155,9 +168,15 @@ async def active_lock(
     incident = await repo.by_id(s, user.user_id, lock.incident_id)
     return ActiveLockOut(
         lock=service.lock_out(
-            lock, review is not None, now, service.breach_of(incident)
+            lock,
+            review is not None,
+            now,
+            service.breach_of(incident),
+            buddy=await service.buddy_view(s, user.user_id, lock),
+            tz=prefs.timezone,
         )
     )
+
 
 
 @router.post("/locks/{lock_id}/review", response_model=ReviewOut)

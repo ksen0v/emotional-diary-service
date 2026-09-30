@@ -19,12 +19,6 @@ from eds.modules.rules import system as sysrules
 from eds.modules.rules.models import RuleRow
 from eds.platform.errors import AppError, not_found
 
-# Доверенное лицо появится вместе с модулем notifications и двойным
-# согласием. До тех пор подтверждённого контакта не существует ни у кого, и
-# правила с условием buddy создать нельзя — так требует ТЗ 6.8, и это лучше
-# заглушки, которая примет настройку и никому ничего не отправит.
-HAS_CONFIRMED_CONTACT = False
-
 # Окно счётчика срабатываний в карточке правила — как в прототипе.
 FIRED_WINDOW_DAYS = 30
 
@@ -79,9 +73,6 @@ async def _repair_system_rules(s: AsyncSession, user_id: uuid.UUID) -> None:
             if "unlock" in editable
             else dict(rule.unlock)
         )
-        if not sysrules.BUDDY_ACTIVE:
-            actions["buddy"] = False
-            unlock["buddy"] = False
         # Условия снятия без блокировки ничего не значат: снимать нечего.
         if not (actions.get("lock") or {}).get("enabled"):
             unlock = dict.fromkeys(dic.UNLOCK_KEYS, False)
@@ -111,7 +102,9 @@ def _merge(
     return out
 
 
-def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
+def rule_out(
+    row: RuleRow, fired_last_30d: int = 0, *, buddy_ready: bool = True
+) -> dict[str, Any]:
     """Правило для API (Архитектура ч.2 §3.6)."""
     is_system = row.kind == "system"
     definition = sysrules.BY_CODE.get(row.system_code or "")
@@ -153,7 +146,9 @@ def rule_out(row: RuleRow, fired_last_30d: int = 0) -> dict[str, Any]:
         # Что у этого триггера ещё не работает — полем, а не умолчанием.
         # Ноль в счётчике сам по себе означает и «не было», и «не считаем»,
         # и экран обязан сказать, какое из двух (урок шага 9).
-        out["pending"] = sysrules.pending_of(row.system_code or "")
+        out["pending"] = sysrules.pending_of(
+            row.system_code or "", row.actions, buddy_ready=buddy_ready
+        )
     return out
 
 
@@ -164,6 +159,7 @@ async def listing(
     *,
     today: dt.date | None = None,
     shadow_mode: bool = False,
+    buddy_ready: bool = True,
 ) -> dict[str, Any]:
     await ensure_system_rules(s, user_id)
     rows = await repo.live(s, user_id)
@@ -173,7 +169,10 @@ async def listing(
         s, user_id, day - dt.timedelta(days=FIRED_WINDOW_DAYS)
     )
     return {
-        "rules": [rule_out(row, fired.get(row.id, 0)) for row in rows],
+        "rules": [
+            rule_out(row, fired.get(row.id, 0), buddy_ready=buddy_ready)
+            for row in rows
+        ],
         # Правило могло быть собрано при другом источнике. Молча его прятать
         # нельзя, поэтому фронт получает список метрик, которых сейчас нет,
         # и может пометить такое правило.
@@ -213,14 +212,15 @@ async def create(
     actions: dict[str, Any],
     unlock: dict[str, Any],
     capabilities: dict[str, Any] | None,
+    buddy_confirmed: bool = False,
 ) -> RuleRow:
     checked_name = validate.name(name)
     checked_conditions = validate.conditions(conditions, capabilities)
     checked_actions = validate.actions(
-        actions, has_confirmed_contact=HAS_CONFIRMED_CONTACT
+        actions, has_confirmed_contact=buddy_confirmed
     )
     checked_unlock = validate.unlock(
-        unlock, has_confirmed_contact=HAS_CONFIRMED_CONTACT
+        unlock, has_confirmed_contact=buddy_confirmed
     )
     return await repo.insert_user_rule(
         s,
@@ -238,6 +238,7 @@ async def patch(
     rule_id: uuid.UUID,
     patch_body: dict[str, Any],
     capabilities: dict[str, Any] | None,
+    buddy_confirmed: bool = False,
 ) -> RuleRow:
     row = await repo.by_id(s, user_id, rule_id)
     if row is None:
@@ -258,14 +259,14 @@ async def patch(
         merged = _merge_actions(row.actions, dict(patch_body["actions"]))
         row.actions = validate.actions(
             merged,
-            has_confirmed_contact=HAS_CONFIRMED_CONTACT,
+            has_confirmed_contact=buddy_confirmed,
             for_system=row.kind == "system",
         )
 
     if patch_body.get("unlock") is not None:
         row.unlock = validate.unlock(
             {**row.unlock, **dict(patch_body["unlock"])},
-            has_confirmed_contact=HAS_CONFIRMED_CONTACT,
+            has_confirmed_contact=buddy_confirmed,
         )
 
     return await repo.save(s, row, bump_version=True)
@@ -328,6 +329,7 @@ def preview(
     conditions: list[dict[str, Any]],
     actions: dict[str, Any],
     unlock: dict[str, Any],
+    buddy_confirmed: bool = False,
 ) -> dict[str, Any]:
     """Фраза для правила, которое ещё не сохранено.
 
@@ -350,11 +352,11 @@ def preview(
             checked_conditions = {"items": []}
         checked_actions = validate.actions(
             actions,
-            has_confirmed_contact=HAS_CONFIRMED_CONTACT,
+            has_confirmed_contact=buddy_confirmed,
             for_system=definition is not None,
         )
         checked_unlock = validate.unlock(
-            unlock, has_confirmed_contact=HAS_CONFIRMED_CONTACT
+            unlock, has_confirmed_contact=buddy_confirmed
         )
     except AppError as err:
         problem = {"code": err.code, "message": err.message, "details": err.details}
@@ -403,22 +405,40 @@ def _loose_actions(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def metrics_catalog(
-    capabilities: dict[str, Any] | None, significance_pct: Decimal
+    capabilities: dict[str, Any] | None,
+    significance_pct: Decimal,
+    *,
+    buddy: dict[str, Any] | None = None,
+    alert_note: str = "",
 ) -> dict[str, Any]:
+    """Словарь для конструктора: из чего можно собрать правило прямо сейчас.
+
+    Готовность доверенного лица и канала алертов приходит сюда снаружи:
+    модуль rules про Telegram и контакты ничего не знает, а экран обязан
+    сказать, куда уйдёт алерт сегодня, и почему нельзя включить сигнал другу.
+    """
+    state = buddy or {}
     catalog = dic.catalog(capabilities, significance_pct)
-    catalog["buddy_available"] = HAS_CONFIRMED_CONTACT
-    catalog["buddy_note"] = (
-        "Доверенное лицо появится вместе с Telegram: нужен бот и двойное согласие."
-    )
+    catalog["buddy_available"] = bool(state.get("confirmed"))
+    if state.get("confirmed"):
+        name = state.get("display_name") or "доверенное лицо"
+        catalog["buddy_note"] = f"Сигнал уйдёт: {name}."
+    elif state.get("exists"):
+        catalog["buddy_note"] = (
+            "Доверенное лицо приглашено, но согласие ещё не получено. "
+            "Пока его нет, сигнал и снятие по подтверждению включить нельзя."
+        )
+    else:
+        catalog["buddy_note"] = (
+            "Доверенного лица нет. Добавь его в настройках: сигнал уходит "
+            "только тому, кто подтвердил согласие в боте."
+        )
     # Канал алерта. Фраза правила по-прежнему говорит «придёт алерт в Telegram»
     # — она описывает само правило, а не готовность канала, и уйдёт в инцидент
     # как текст на момент срабатывания. А вот экран обязан сказать, куда алерт
     # уходит сегодня: иначе трейдер будет ждать сообщение в Telegram, которого
     # пока нет.
-    catalog["alert_note"] = (
-        "Telegram ещё не подключён. Пока алерт пишется в журнал сервиса, "
-        "а блокировку видно на экране."
-    )
+    catalog["alert_note"] = alert_note
     return catalog
 
 

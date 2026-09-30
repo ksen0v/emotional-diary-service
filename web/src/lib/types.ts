@@ -383,9 +383,24 @@ export type Lock = {
   review_filled: boolean
   unlock_short: string
   unlock_text: string
-  // Доверенное лицо появится вместе с Telegram.
-  buddy: null
+  // Доверенное лицо: null, если условие «подтверждение» у блокировки
+  // не включено. Пустого объекта здесь не бывает — он читался бы как
+  // «контакт есть, просто без имени».
+  buddy: LockBuddy | null
   breach: Breach | null
+}
+
+export type LockBuddy = {
+  state: 'idle' | 'waiting' | 'confirmed'
+  display_name: string
+  exists: boolean
+  requested_at: string | null
+  confirmed_at: string | null
+  cooldown_sec: number
+  can_request: boolean
+  // Обе строки собирает сервер: они же уходят в Telegram и в историю.
+  text: string
+  fallback_text: string
 }
 
 export type LockReviewResult = {
@@ -724,4 +739,79 @@ export type RulePreview = {
   summary: string
   valid: boolean
   problem: { code: string; message: string; details?: Record<string, unknown> } | null
+}
+
+
+// --- уведомления ---
+
+export type BotState = {
+  installed: boolean
+  username: string | null
+  updated_at: string | null
+}
+
+export type TelegramLink = {
+  state: 'linked' | 'unlinked'
+  linked_at: string | null
+  code: string | null
+  code_expires_at?: string | null
+  enabled: boolean
+}
+
+export type BuddyContact = {
+  id: string
+  handle: string
+  display_name: string | null
+  status: 'pending' | 'confirmed'
+  consent_at: string | null
+  invited_at: string
+  // Ссылка-приглашение: бот не может написать первым тому, кто его
+  // не запускал, поэтому пересылает её трейдер сам.
+  invite_url: string | null
+  removal_effective_at: string | null
+  template: string | null
+  awaiting_consent: boolean
+}
+
+export type NotifySettings = {
+  bot: BotState
+  telegram: TelegramLink
+  contact: BuddyContact | null
+  signals_this_month: number
+  notes: { state: string; removal: string; privacy: string }
+}
+
+export type LinkStart = {
+  code: string
+  bot_url: string
+  bot_username: string
+  expires_at: string
+}
+
+export type NotifyTemplate = {
+  key: string
+  name: string
+  when: string
+  body: string
+  default_body: string
+  is_customized: boolean
+  placeholders: string[]
+  channel: 'telegram_self' | 'telegram_buddy'
+  to: string
+  buddy: boolean
+  preview: string
+  max_length: number
+}
+
+export type TemplatePreview = {
+  rendered: string
+  sample: Record<string, string>
+  to: string
+}
+
+export type BuddyRequestResult = {
+  requested_at: string
+  cooldown_sec: number
+  buddy: LockBuddy
+  message: string
 }

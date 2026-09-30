@@ -300,6 +300,7 @@ async def sr2_breaches(
                 "breached_rule_name": lock.rule_name,
                 "snapshot": snapshot,
             },
+            buddy=bool((rule.actions or {}).get("buddy")),
             shadow=prefs.shadow_mode,
             now=now,
         )
@@ -390,6 +391,7 @@ async def sr3_no_admission(
             "trade_id": None,
             "snapshot": snapshot,
         },
+        buddy=bool((rule.actions or {}).get("buddy")),
         shadow=prefs.shadow_mode,
         now=now,
     )
@@ -425,9 +427,9 @@ async def sr4_unmarked(
     разметить. N берётся из настроек самого триггера (`remind_after_minutes`,
     по умолчанию 15 — ТЗ 6.5), а не из константы: это редактируемое поле.
 
-    Алерт уходит в лог, пока нет Telegram, а на экране «Сегодня» появляется строка
-    в `attention`. Возвращается список сделок — из него собирается и то,
-    и другое.
+    На экране «Сегодня» появляется строка в `attention`, а в Telegram уходит
+    напоминание — по тем сделкам, о которых ещё не напоминали. Возвращается
+    список сделок с пометкой `fresh` — из него собирается и то, и другое.
     """
     rule = await _rule(s, user_id, sysrules.SR4)
     if rule is None:
@@ -443,30 +445,31 @@ async def sr4_unmarked(
 
     out: list[dict[str, Any]] = []
     for trade_id, symbol, close_time in overdue:
-        out.append(
-            {
-                "trade_id": str(trade_id),
-                "symbol": symbol,
-                "close_time": close_time.isoformat() if close_time else None,
-            }
-        )
         trigger_ref = f"unmarked:{trade_id}"
         # Алерт на сделку один: повод записывается в журнал проверок, и
         # второй раз о той же сделке сервис не напомнит. Иначе экран
         # «Сегодня», который читается раз в минуту, слал бы напоминание
         # каждую минуту — и его перестали бы читать.
-        if await _claim(
+        fresh = await _claim(
             s,
             user_id,
             rule,
             day,
             trigger_ref,
             {"symbol": symbol, "minutes": int(minutes)},
-        ):
-            log.info(
-                "SR-4 (Telegram ещё не подключён): сделка %s без разметки "
-                "дольше %s минут",
-                symbol,
-                minutes,
-            )
+        )
+        out.append(
+            {
+                "trade_id": str(trade_id),
+                "symbol": symbol,
+                "close_time": close_time.isoformat() if close_time else None,
+                # Уведомление уходит только по тем, о которых ещё не говорили:
+                # экран показывает все просроченные, а напоминание — новость,
+                # и повторять её каждую минуту значит её обесценить.
+                "fresh": fresh,
+                "minutes": int(minutes),
+            }
+        )
+        if fresh:
+            log.info("SR-4: сделка %s без разметки дольше %s минут", symbol, minutes)
     return out

@@ -71,7 +71,21 @@ async def on_connection_changed(event: bus.Event) -> None:
     )
 
 
+async def on_bot_changed(event: bus.Event) -> None:
+    """Токен бота вставили или убрали → поднять бота заново.
+
+    Событием, а не обходом по расписанию: вставленный токен должен начать
+    работать сразу. То же решение, что с подключением источника, и по той же
+    причине — минута ожидания съедает первую проверку.
+    """
+    from eds.app import bot as app_bot
+
+    app_bot.runner.reload()
+    log.info("токен бота изменён (%s): бот перезапускается", event.payload.get("reason"))
+
+
 def all_consumers() -> list[bus.Consumer]:
+    from eds.app import notify as app_notify
     from eds.app import ui_stream
 
     return [
@@ -87,6 +101,14 @@ def all_consumers() -> list[bus.Consumer]:
             "engine_on_marking",
             on_marking_changed,
             types=(ev.TRADES_MARKING_CHANGED,),
+        ),
+        # Уведомления: свой курсор, как у любого потребителя. Отставшая
+        # отправка не должна тормозить движок правил.
+        app_notify.consumer(),
+        bus.Consumer(
+            "bot_on_token",
+            on_bot_changed,
+            types=(ev.NOTIFY_BOT_CHANGED,),
         ),
         bus.Consumer(
             "streams_on_connection",

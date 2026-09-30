@@ -44,17 +44,28 @@ class UserPrefs:
     # приходят сюда тем же путём, что таймзона и порог значимости.
     pass_score: int = 19
     min_score: int = 13
+    # Тем же путём ходит тумблер уведомлений: решает трейдер в настройках,
+    # а смотрит на него модуль notifications перед постановкой в очередь.
+    telegram_enabled: bool = True
+    # Как назвать трейдера в сообщении доверенному лицу ({trader_name}).
+    # Отдельного имени в ТЗ нет, поэтому берётся часть почты до собаки —
+    # и трейдер в любой момент переписывает текст своими словами.
+    trader_name: str = ""
 
 
 UserResolver = Callable[[AsyncSession, str], Awaitable[CurrentUser]]
 PrefsResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[UserPrefs]]
 CapabilitiesResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
 PositionsResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
+NotifyResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[dict]]
+LockResolver = Callable[[AsyncSession, uuid.UUID], Awaitable[bool]]
 
 _user_resolver: UserResolver | None = None
 _prefs_resolver: PrefsResolver | None = None
 _capabilities_resolver: CapabilitiesResolver | None = None
 _positions_resolver: PositionsResolver | None = None
+_notify_resolver: NotifyResolver | None = None
+_lock_resolver: LockResolver | None = None
 
 
 def register(user: UserResolver, prefs: PrefsResolver) -> None:
@@ -76,6 +87,29 @@ def register_source(
     global _capabilities_resolver, _positions_resolver
     _capabilities_resolver = capabilities
     _positions_resolver = positions
+
+
+def register_notify(state: NotifyResolver) -> None:
+    """Вызывается модулем notifications. Больше никем.
+
+    Через это модуль rules узнаёт, есть ли подтверждённое доверенное лицо
+    и куда сегодня уходит алерт, не зная о существовании модуля notifications:
+    без подтверждённого контакта правило с сигналом другу сохранять нельзя
+    (ТЗ 6.8), а экран обязан сказать, работает ли канал.
+    """
+    global _notify_resolver
+    _notify_resolver = state
+
+
+def register_incidents(active_lock: LockResolver) -> None:
+    """Вызывается модулем incidents. Больше никем.
+
+    Нужно ровно для одного: отключить доверенное лицо во время активного
+    инцидента нельзя (ТЗ 6.8), а решает это модуль notifications, который
+    про блокировки ничего не знает и знать не должен.
+    """
+    global _lock_resolver
+    _lock_resolver = active_lock
 
 
 async def check_csrf(request: Request) -> None:
@@ -133,6 +167,37 @@ async def source_capabilities(s: AsyncSession, user_id: uuid.UUID) -> dict:
 async def source_provides_tags(s: AsyncSession, user_id: uuid.UUID) -> bool:
     caps = await source_capabilities(s, user_id)
     return bool(caps.get("provides_tags", False))
+
+
+EMPTY_NOTIFY = {
+    "bot_installed": False,
+    "linked": False,
+    "buddy": {"exists": False, "confirmed": False, "display_name": None},
+}
+
+
+async def notify_state(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Готовность канала уведомлений: бот, привязка, доверенное лицо."""
+    if _notify_resolver is None:
+        return dict(EMPTY_NOTIFY)
+    return await _notify_resolver(s, user_id)
+
+
+async def buddy_contact(s: AsyncSession, user_id: uuid.UUID) -> dict:
+    """Доверенное лицо: есть ли и подтвердило ли согласие.
+
+    Пусто — модуль уведомлений не подключён или контакта нет. `confirmed`
+    значит именно двойное согласие: пока друг не нажал кнопку в боте,
+    ни сигнал ему, ни снятие по его подтверждению настроить нельзя.
+    """
+    state = await notify_state(s, user_id)
+    return dict(state.get("buddy") or EMPTY_NOTIFY["buddy"])
+
+
+async def has_active_lock(s: AsyncSession, user_id: uuid.UUID) -> bool:
+    if _lock_resolver is None:
+        return False
+    return await _lock_resolver(s, user_id)
 
 
 async def open_positions(s: AsyncSession, user_id: uuid.UUID) -> dict:

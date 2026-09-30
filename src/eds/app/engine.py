@@ -242,7 +242,12 @@ async def today_block(
     review = await incidents_repo.review_of(s, lock.id)
     incident = await incidents_repo.by_id(s, user_id, lock.incident_id)
     block["lock"] = incidents.lock_out(
-        lock, review is not None, moment, incidents.breach_of(incident)
+        lock,
+        review is not None,
+        moment,
+        incidents.breach_of(incident),
+        buddy=await incidents.buddy_view(s, user_id, lock),
+        tz=prefs.timezone,
     )
     return block
 
