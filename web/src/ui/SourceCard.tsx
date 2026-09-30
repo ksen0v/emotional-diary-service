@@ -6,10 +6,9 @@ import type {
   ConnectResult,
   Connections,
   Probe,
-  StreamCheck,
   SwitchConsequences,
 } from '../lib/types'
-import { KeyRights, ProbeView, SourceConnect } from './SourceConnect'
+import { ProbeView, SourceConnect } from './SourceConnect'
 import { dateTime } from './format'
 
 const LABELS: Record<string, string> = {
@@ -35,7 +34,6 @@ export function SourceCard() {
   const qc = useQueryClient()
   const connections = useConnections()
   const rows = connections.data?.connections ?? []
-  const fake = rows.find((c) => c.provider === 'fake')
   // Настоящий источник может быть только один активный, но подключены могут
   // быть оба: переключение между ними — отдельная операция с подтверждением.
   const real = rows.filter((c) => c.provider !== 'fake')
@@ -46,7 +44,6 @@ export function SourceCard() {
   >(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const [probe, setProbe] = useState<Probe | null>(null)
-  const [streamCheck, setStreamCheck] = useState<StreamCheck | null>(null)
   const [error, setError] = useState('')
 
   function refresh() {
@@ -57,12 +54,6 @@ export function SourceCard() {
     qc.invalidateQueries({ queryKey: ['curve'] })
     qc.invalidateQueries({ queryKey: ['me'] })
   }
-
-  const connectFake = useMutation({
-    mutationFn: () => api.post<Connection>('/source/connections/fake'),
-    onSuccess: refresh,
-    onError: (err) => setError(message(err)),
-  })
 
   const activate = useMutation({
     mutationFn: (args: { id: string; confirm: boolean }) =>
@@ -98,23 +89,6 @@ export function SourceCard() {
     },
   })
 
-  // Диагностика потока отдельной кнопкой. Рабочий поток ошибки прячет внутрь
-  // и переподключается сам — это верно для работы и бесполезно, когда надо
-  // ответить, почему сделка не приехала. Проверка идёт тем же путём: ключ
-  // потока, потом соединение, и первый непройденный шаг и есть ответ.
-  const checkStream = useMutation({
-    mutationFn: (id: string) =>
-      api.post<StreamCheck>(`/source/connections/${id}/stream-check`),
-    onSuccess: (data) => {
-      setStreamCheck(data)
-      setError('')
-    },
-    onError: (err) => {
-      setStreamCheck(null)
-      setError(message(err))
-    },
-  })
-
   const remove = useMutation({
     mutationFn: (id: string) => api.del<void>(`/source/connections/${id}`),
     onSuccess: () => {
@@ -125,14 +99,6 @@ export function SourceCard() {
     onError: (err) => setError(message(err)),
   })
 
-  // Переключатель только для тестового источника: он позволяет проверить
-  // свою разметку до появления Binance, у которого тегов нет.
-  const pretend = useMutation({
-    mutationFn: (patch: { provides_tags?: boolean; provides_positions?: boolean }) =>
-      api.patch<Connection>('/source/connections/fake/capabilities', patch),
-    onSuccess: refresh,
-  })
-
   return (
     <div className="card" style={{ padding: '18px 20px' }}>
       <div className="klabel" style={{ marginBottom: 14 }}>
@@ -141,8 +107,7 @@ export function SourceCard() {
 
       {rows.length === 0 && (
         <div className="hint" style={{ marginBottom: 14 }}>
-          Ничего не подключено. Вставь ключ TMM — или подключи тестовый источник,
-          если хочешь просто посмотреть, как всё работает.
+          Ничего не подключено. Вставь ключ, чтобы сервис начал видеть сделки.
         </div>
       )}
 
@@ -186,62 +151,12 @@ export function SourceCard() {
 
           <div className="hint" style={{ marginTop: 8 }}>
             Отсчёт с {dateTime(row.ingest_from)}: сделки, закрытые раньше, сервис
-            не видит. Истории не импортируем — метрики начинаются с этого момента.
+            не видит.
           </div>
 
           {row.last_error && (
             <div className="err" style={{ marginTop: 8 }}>
               {row.last_error}
-            </div>
-          )}
-
-          {row.last_reconcile && (
-            <div className="hint" style={{ marginTop: 6 }}>
-              Последняя сверка {dateTime(row.last_reconcile.started_at)}:{' '}
-              {row.last_reconcile.status === 'ok'
-                ? `получено ${row.last_reconcile.trades_seen}, новых `
-                  + `${row.last_reconcile.trades_new}`
-                : `${row.last_reconcile.status} — ${row.last_reconcile.error ?? ''}`}
-              {row.rate_limit?.remaining !== null
-                && row.rate_limit?.remaining !== undefined
-                && `. Лимит запросов: ${row.rate_limit.remaining}`
-                  + (row.rate_limit.limit ? ` из ${row.rate_limit.limit}` : '')}
-            </div>
-          )}
-
-          {streamCheck && row.capabilities.provides_stream === true && (
-            <div
-              className={streamCheck.error ? 'err' : 'hint'}
-              style={{ marginTop: 6 }}
-            >
-              Поток: ключ — {streamCheck.listen_key ?? '—'}, соединение —{' '}
-              {streamCheck.socket ?? '—'}
-              {streamCheck.error ? `. ${streamCheck.error}` : '.'}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-            {Object.entries(row.capabilities).map(([key, value]) => (
-              <span
-                key={key}
-                className="mono"
-                style={{
-                  fontSize: 11,
-                  padding: '3px 9px',
-                  borderRadius: 12,
-                  border: '1px solid var(--line-2)',
-                  color: value === true ? 'var(--ok)' : 'var(--faint)',
-                }}
-              >
-                {key}
-                {typeof value === 'string' ? `: ${value}` : ''}
-              </span>
-            ))}
-          </div>
-
-          {row.permissions && (
-            <div style={{ marginTop: 12 }}>
-              <KeyRights permissions={row.permissions} />
             </div>
           )}
 
@@ -262,15 +177,6 @@ export function SourceCard() {
                 style={{ fontSize: 12, padding: '6px 12px' }}
               >
                 {verify.isPending ? 'Проверяю…' : 'Проверить'}
-              </button>
-            )}
-            {row.capabilities.provides_stream === true && (
-              <button
-                onClick={() => checkStream.mutate(row.id)}
-                disabled={checkStream.isPending}
-                style={{ fontSize: 12, padding: '6px 12px' }}
-              >
-                {checkStream.isPending ? 'Проверяю поток…' : 'Проверить поток'}
               </button>
             )}
             {row.provider !== 'fake' && (
@@ -311,49 +217,6 @@ export function SourceCard() {
             )}
           </div>
 
-          {row.provider === 'fake' && row.is_active && (
-            <div
-              style={{
-                marginTop: 12,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                flexWrap: 'wrap',
-              }}
-            >
-              <button
-                onClick={() =>
-                  pretend.mutate({ provides_tags: !row.capabilities.provides_tags })
-                }
-                disabled={pretend.isPending}
-                className={row.capabilities.provides_tags ? '' : 'primary'}
-                style={{ fontSize: 12, padding: '6px 12px' }}
-              >
-                {row.capabilities.provides_tags
-                  ? 'Изображать источник без тегов'
-                  : 'Вернуть теги источника'}
-              </button>
-              <button
-                onClick={() =>
-                  pretend.mutate({
-                    provides_positions: !row.capabilities.provides_positions,
-                  })
-                }
-                disabled={pretend.isPending}
-                className={row.capabilities.provides_positions ? 'primary' : ''}
-                style={{ fontSize: 12, padding: '6px 12px' }}
-              >
-                {row.capabilities.provides_positions
-                  ? 'Убрать открытые позиции'
-                  : 'Изображать источник с позициями'}
-              </button>
-              <span className="hint" style={{ flex: 1 }}>
-                Так работает Binance: тегов нет — нарушения отмечаются кнопками
-                в ленте сделок; открытые позиции есть — просадка считается
-                с учётом незакрытого минуса.
-              </span>
-            </div>
-          )}
         </div>
       ))}
 
@@ -429,21 +292,6 @@ export function SourceCard() {
         </div>
       )}
 
-      {!fake && (
-        <div>
-          <button
-            onClick={() => connectFake.mutate()}
-            disabled={connectFake.isPending}
-            style={{ fontSize: 12, padding: '6px 12px' }}
-          >
-            {connectFake.isPending ? 'Подключаю…' : 'Подключить тестовый источник'}
-          </button>
-          <div className="hint" style={{ marginTop: 6 }}>
-            Ведёт себя как настоящий, но сделки в него подаёшь ты. Нужен для
-            сценариев, которые в реальной торговле пришлось бы ждать днями.
-          </div>
-        </div>
-      )}
     </div>
   )
 }

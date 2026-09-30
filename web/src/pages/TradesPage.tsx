@@ -59,12 +59,10 @@ export function TradesPage() {
   const active = connections.data?.connections.find((c) => c.is_active)
   const provideTags = Boolean(active?.capabilities.provides_tags)
   const isFake = active?.provider === 'fake'
-  const [syncReport, setSyncReport] = useState<SyncReport | null>(null)
   const [syncError, setSyncError] = useState('')
   const sync = useMutation({
     mutationFn: () => api.post<SyncReport>('/sync'),
-    onSuccess: (data) => {
-      setSyncReport(data)
+    onSuccess: () => {
       setSyncError('')
       qc.invalidateQueries({ queryKey: ['trades'] })
       qc.invalidateQueries({ queryKey: ['curve'] })
@@ -72,7 +70,6 @@ export function TradesPage() {
       qc.invalidateQueries({ queryKey: ['connections'] })
     },
     onError: (err) => {
-      setSyncReport(null)
       setSyncError(err instanceof ApiError ? err.message : 'Сверка не прошла.')
     },
   })
@@ -156,7 +153,7 @@ export function TradesPage() {
         <div className="card" style={{ padding: '16px 18px' }}>
           <div style={{ color: 'var(--dim)' }}>Источник сделок не подключён.</div>
           <div className="hint" style={{ marginTop: 6 }}>
-            Вставь ключ TMM на экране настроек — или подключи там тестовый источник.
+            Вставь ключ на экране настроек.
           </div>
         </div>
       )}
@@ -177,23 +174,7 @@ export function TradesPage() {
             >
               {sync.isPending ? 'Сверяю…' : 'Сверить сейчас'}
             </button>
-            <span className="hint" style={{ flex: 1 }}>
-              Сверка забирает сделки у источника. Она идёт и сама: раз в десять
-              минут, а у источника с потоком исполнения приезжают сразу.
-              Кнопка — чтобы не ждать.
-            </span>
           </div>
-          {syncReport && (
-            <div className="hint mono" style={{ marginTop: 8 }}>
-              получено {syncReport.received}, принято {syncReport.inserted},
-              переразмечено {syncReport.remarked}, без изменений{' '}
-              {syncReport.unchanged}, до отсчёта{' '}
-              {syncReport.skipped_before_ingest_from}, чужой счёт{' '}
-              {syncReport.skipped_unknown_account}, открылось{' '}
-              {syncReport.opened}, обновлено{' '}
-              {syncReport.open_updated}, закрылось {syncReport.closed}
-            </div>
-          )}
           {syncError && (
             <div className="err" style={{ marginTop: 8 }}>
               {syncError}

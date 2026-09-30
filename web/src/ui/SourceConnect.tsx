@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ApiError, api } from '../lib/api'
-import type { ConnectResult, KeyPermissions, Probe } from '../lib/types'
+import type { ConnectResult, Probe } from '../lib/types'
 import { duration, money, pct, pnlColor, time } from './format'
 
 // Одна форма на оба источника, а не две карточки рядом. Причина не в экономии
@@ -180,51 +180,6 @@ export function SourceConnect({
   )
 }
 
-// Права ключа показываются так, как их отдала биржа. Это не украшение:
-// сервис отказывает по правам, и трейдер должен видеть, на основании чего.
-const RIGHTS: { key: keyof KeyPermissions; label: string; good: boolean }[] = [
-  { key: 'enableReading', label: 'чтение', good: true },
-  { key: 'enableWithdrawals', label: 'вывод средств', good: false },
-  { key: 'enableFutures', label: 'торговля фьючерсами', good: false },
-  { key: 'enableSpotAndMarginTrading', label: 'торговля на споте', good: false },
-  { key: 'ipRestrict', label: 'привязка к IP', good: false },
-]
-
-export function KeyRights({ permissions }: { permissions: KeyPermissions }) {
-  return (
-    <div>
-      <div className="klabel" style={{ marginBottom: 8 }}>
-        Права ключа
-      </div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {RIGHTS.map((row) => {
-          const on = permissions[row.key] === true
-          // Зелёный — «так и должно быть», жёлтый — «есть, но сервису не нужно».
-          const color = on === row.good ? 'var(--ok)' : 'var(--warn)'
-          return (
-            <span
-              key={row.key}
-              style={{
-                fontSize: 11,
-                padding: '3px 9px',
-                borderRadius: 12,
-                border: '1px solid var(--line-2)',
-                color: on ? color : 'var(--faint)',
-              }}
-            >
-              {row.label}: {on ? 'есть' : 'нет'}
-            </span>
-          )
-        })}
-      </div>
-      <div className="hint" style={{ marginTop: 8 }}>
-        Снимок сделан при подключении. Права могли измениться с тех пор — кнопка
-        «Проверить» перечитывает их заново.
-      </div>
-    </div>
-  )
-}
-
 export function ProbeView({ probe }: { probe: Probe }) {
   const binance = probe.permissions !== null
   return (
@@ -318,11 +273,6 @@ export function ProbeView({ probe }: { probe: Probe }) {
               </span>
             </div>
           ))}
-        </div>
-      )}
-      {probe.permissions && (
-        <div style={{ marginTop: 12 }}>
-          <KeyRights permissions={probe.permissions} />
         </div>
       )}
       {probe.window_filter_honored === false && (
