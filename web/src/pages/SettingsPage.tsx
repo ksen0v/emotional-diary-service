@@ -111,8 +111,6 @@ export function SettingsPage({ me }: { me: Me }) {
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
-        flexGrow: 1,
-        minHeight: 0,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -132,11 +130,11 @@ export function SettingsPage({ me }: { me: Me }) {
       {tab === 'texts' && <NotifyTexts />}
 
       {tab === 'main' && (
-    <div style={{ display: 'flex', gap: 20, flexGrow: 1, minHeight: 0 }}>
+    <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
       {/* Две колонки, как в прототипе Settings.dc.html: слева подключение
-          источника и словарь тегов, справа всё остальное. Каждая колонка
-          прокручивается сама — иначе длинный словарь тегов увозил бы вниз
-          и пороги, и режим наблюдения. */}
+          источника и словарь тегов, справа всё остальное. Своего скролла
+          у колонок нет — решение Влада от 30.09: прокручивается страница
+          целиком, обе колонки едут вместе. */}
       <div
         style={{
           width: 500,
@@ -144,8 +142,6 @@ export function SettingsPage({ me }: { me: Me }) {
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
-          minHeight: 0,
-          overflowY: 'auto',
         }}
       >
         <SourceCard />
@@ -159,8 +155,6 @@ export function SettingsPage({ me }: { me: Me }) {
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
-          minHeight: 0,
-          overflowY: 'auto',
         }}
       >
 

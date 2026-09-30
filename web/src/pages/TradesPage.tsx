@@ -130,8 +130,6 @@ export function TradesPage() {
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
-        flexGrow: 1,
-        minHeight: 0,
       }}
     >
       {!hasSource && (
@@ -286,10 +284,10 @@ export function TradesPage() {
         </div>
       )}
 
-      <div
-        className="card"
-        style={{ padding: '4px 0', flexGrow: 1, minHeight: 0, overflowY: 'auto' }}
-      >
+      {/* Своего скролла у ленты нет — решение Влада от 30.09: прокручивается
+          страница целиком. В прототипе Trades.dc.html список скроллился
+          внутри карточки, это названное отступление. */}
+      <div className="card" style={{ padding: '4px 0' }}>
         {feed.isLoading && <div className="hint" style={{ padding: 16 }}>загрузка…</div>}
         {/* «Сделок нет» считается по обоим спискам. Пока считалось по одному
             закрытому, экран умудрялся написать «сделок за период нет» прямо
