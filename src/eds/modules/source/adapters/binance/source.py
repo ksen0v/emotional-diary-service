@@ -66,6 +66,21 @@ OVERLAP = dt.timedelta(hours=1)
 ZERO = Decimal("0")
 
 
+def _price_move_pct(
+    entry: Decimal | None, exit_price: Decimal | None, side: str
+) -> Decimal | None:
+    """Ход цены в процентах: от средней входа до средней выхода.
+
+    Та же величина, что у закрытой сделки считает агрегатор, — здесь она
+    нужна для ещё не закрытой позиции, где роль цены выхода играет марка.
+    Нет одной из цен — нет и процента: ноль означал бы «цена не двигалась».
+    """
+    if not entry or not exit_price:
+        return None
+    move = (exit_price - entry) / entry * 100
+    return move if side == "long" else -move
+
+
 class BinanceSource:
     """Порт TradeSource для Binance. Один экземпляр на один проход."""
 
@@ -288,6 +303,9 @@ class BinanceSource:
             )
             pct = return_pct(profit, balance)
             notional = position.entry_price * position.qty
+            move = _price_move_pct(
+                position.entry_price, row.mark_price, position.side
+            )
             out.append(
                 IncomingTrade(
                     external_id=(
@@ -301,7 +319,7 @@ class BinanceSource:
                     account_return_pct=pct if pct is not None else ZERO,
                     open_time=position.open_time,
                     close_time=None,
-                    percent=(profit / notional * 100) if notional else None,
+                    percent=move,
                     size_usd=notional,
                     leverage=None,
                     duration_sec=None,
@@ -544,7 +562,10 @@ class BinanceSource:
             account_return_pct=pct if pct is not None else ZERO,
             open_time=trade.open_time,
             close_time=trade.close_time,
-            percent=(trade.profit_usd / notional * 100) if notional else None,
+            # Процент сделки — это ход цены от средней входа до средней
+            # выхода, а не доля прибыли в номинале: комиссия и фандинг
+            # меняют результат, но не то, куда сходила цена.
+            percent=trade.price_move_pct,
             size_usd=notional,
             # Плечо биржа отдаёт по позиции, а не по исполнению, и для закрытой
             # сделки его уже не спросить. Пусто честнее выдуманного числа.

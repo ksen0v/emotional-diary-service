@@ -81,6 +81,7 @@ class AggregatedTrade:
     qty: Decimal  # суммарный объём входа
     exit_qty: Decimal  # суммарный объём выхода; у закрытой сделки равен входу
     entry_price: Decimal  # средневзвешенный вход
+    exit_price: Decimal  # средневзвешенный выход
     realized_pnl: Decimal
     commission_usdt: Decimal
     funding: Decimal
@@ -97,6 +98,23 @@ class AggregatedTrade:
         больше, чем мы. Комиссия вычитается, фандинг прибавляется со своим знаком.
         """
         return self.realized_pnl - self.commission_usdt + self.funding
+
+    @property
+    def price_move_pct(self) -> Decimal | None:
+        """Ход цены: расстояние от средней входа до средней выхода, в процентах.
+
+        Это не то же самое, что процент от депозита: тот отвечает на вопрос
+        «сколько это в моём счёте» и при почти нулевом депозите превращает
+        шесть центов в двузначное число. Здесь — свойство самой сделки,
+        от размера счёта не зависящее. Комиссия и фандинг сюда не входят
+        сознательно: они меняют результат, но не то, куда сходила цена.
+
+        У шорта знак переворачивается: цена упала — сделка в плюс.
+        """
+        if not self.entry_price or not self.exit_price:
+            return None
+        move = (self.exit_price - self.entry_price) / self.entry_price * 100
+        return move if self.side == "long" else -move
 
     @property
     def external_id(self) -> str:
@@ -131,11 +149,16 @@ class OpenPosition:
     commission_usdt: Decimal
     last_fill_id: int
     first_fill_id: int
+    exit_cost: Decimal = ZERO
     fill_ids: list[int] = field(default_factory=list)
 
     @property
     def entry_price(self) -> Decimal:
         return self.entry_cost / self.entry_qty if self.entry_qty else ZERO
+
+    @property
+    def exit_price(self) -> Decimal:
+        return self.exit_cost / self.exit_qty if self.exit_qty else ZERO
 
     def as_dict(self) -> dict:
         return {
@@ -148,6 +171,7 @@ class OpenPosition:
             "open_time": self.open_time.isoformat(),
             "entry_cost": str(self.entry_cost),
             "entry_qty": str(self.entry_qty),
+            "exit_cost": str(self.exit_cost),
             "realized_pnl": str(self.realized_pnl),
             "commission_usdt": str(self.commission_usdt),
             "last_fill_id": self.last_fill_id,
@@ -167,6 +191,7 @@ class OpenPosition:
             open_time=dt.datetime.fromisoformat(raw["open_time"]),
             entry_cost=Decimal(raw["entry_cost"]),
             entry_qty=Decimal(raw["entry_qty"]),
+            exit_cost=Decimal(raw.get("exit_cost", "0")),
             realized_pnl=Decimal(raw["realized_pnl"]),
             commission_usdt=Decimal(raw["commission_usdt"]),
             last_fill_id=raw["last_fill_id"],
@@ -336,6 +361,7 @@ def _absorb(
         position.entry_qty += qty
     else:
         position.exit_qty += qty
+        position.exit_cost += fill.price * qty
     position.realized_pnl += fill.realized_pnl
     position.commission_usdt += commission
     position.last_fill_id = fill.external_id
@@ -352,6 +378,7 @@ def _closed(position: OpenPosition, fill: Fill) -> AggregatedTrade:
         qty=position.qty,
         exit_qty=position.exit_qty,
         entry_price=position.entry_price,
+        exit_price=position.exit_price,
         realized_pnl=position.realized_pnl,
         commission_usdt=position.commission_usdt,
         funding=ZERO,

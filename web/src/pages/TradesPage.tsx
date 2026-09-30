@@ -429,15 +429,18 @@ function Row({
       >
         {money(trade.profit_usd)}
       </span>
+      {/* Процент сделки — ход цены от средней входа до средней выхода,
+          а не доля в депозите: при маленьком счёте тот превращал шесть
+          центов в двузначное число. Решение Влада от 30.09. */}
       <span
         className="mono"
         style={{
           width: 72,
           textAlign: 'right',
-          color: pnlColor(trade.account_return_pct),
+          color: trade.percent === null ? 'var(--faint)' : pnlColor(trade.percent),
         }}
       >
-        {pct(trade.account_return_pct)}
+        {trade.percent === null ? '—' : pct(trade.percent)}
       </span>
       <span style={{ width: 70, color: 'var(--faint)' }}>
         {duration(trade.duration_sec)}
@@ -535,7 +538,7 @@ function OpenRow({
   // секундой цена ушла, и показывать старое значение рядом с идущим
   // счётчиком было бы хуже, чем не показывать ничего.
   const profit = tick?.profit_usd ?? trade.profit_usd
-  const returnPct = tick?.account_return_pct ?? trade.account_return_pct
+  const movePct = tick?.percent ?? trade.percent
   const marking = tick?.marking ?? trade.marking
   const elapsed = Math.max(
     0,
@@ -575,9 +578,13 @@ function OpenRow({
       </span>
       <span
         className="mono"
-        style={{ width: 72, textAlign: 'right', color: pnlColor(returnPct) }}
+        style={{
+          width: 72,
+          textAlign: 'right',
+          color: movePct === null ? 'var(--faint)' : pnlColor(movePct),
+        }}
       >
-        {pct(returnPct)}
+        {movePct === null ? '—' : pct(movePct)}
       </span>
       <span style={{ width: 70, color: 'var(--warn)' }}>в рынке</span>
       {trade.tags.map((tag) => (
