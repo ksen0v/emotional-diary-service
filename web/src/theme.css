@@ -20,6 +20,19 @@
 
 * { box-sizing: border-box; }
 
+/* Полоса прокрутки не показывается нигде — решение Влада от 30.09.
+   Сама прокрутка при этом работает обычным образом: колесом, клавишами
+   и жестом на тачпаде. */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 body {
   margin: 0;
   background: var(--bg);
