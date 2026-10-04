@@ -4,7 +4,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, LargeBinary, SmallInteger, Text
+from sqlalchemy import BigInteger, DateTime, SmallInteger, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,21 +34,6 @@ QUEUED = "queued"
 SENT = "sent"
 FAILED = "failed"
 SKIPPED = "skipped"
-
-
-class BotRow(Base):
-    """Токен бота. Одна строка на сервис: бот один, и токен — секрет сервиса."""
-
-    __tablename__ = "bot"
-    __table_args__ = {"schema": SCHEMA}
-
-    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
-    token_encrypted: Mapped[bytes] = mapped_column(LargeBinary)
-    key_version: Mapped[int] = mapped_column(SmallInteger)
-    username: Mapped[str | None] = mapped_column(Text)
-    bot_id: Mapped[int | None] = mapped_column(BigInteger)
-    installed_by: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True))
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
 
 
 class LinkRow(Base):

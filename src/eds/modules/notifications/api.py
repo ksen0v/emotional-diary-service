@@ -18,9 +18,8 @@ from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eds.contracts import events as ev
 from eds.modules.notifications import repo, service
-from eds.platform import auth, bus, db
+from eds.platform import auth, db
 from eds.platform.errors import not_found
 
 router = APIRouter(prefix="/api/v1", tags=["notify"])
@@ -33,7 +32,7 @@ router = APIRouter(prefix="/api/v1", tags=["notify"])
 
 async def _resolve_notify(s: AsyncSession, user_id: uuid.UUID) -> dict:
     link = await service.link_state(s, user_id)
-    bot = await service.bot_state(s)
+    bot = await service.bot_state()
     return {
         "bot_installed": bool(bot["installed"]),
         "linked": link["state"] == "linked",
@@ -131,13 +130,16 @@ async def notify_settings(
 ) -> SettingsOut:
     now = dt.datetime.now(dt.UTC)
     contact = await repo.contact_of(s, user.user_id)
-    bot = await service.bot_state(s)
+    bot = await service.bot_state()
     link = await service.link_state(s, user.user_id)
 
     # Экран не врёт: если канала нет, он должен сказать, куда уходят алерты
     # сейчас, а не молчать. Строку собирает сервер — она же стоит в правилах.
     if not bot["installed"]:
-        state_note = "Токен бота не вставлен: алерты пишутся в журнал сервиса."
+        state_note = (
+            "Токен бота не задан в окружении сервиса: "
+            "алерты пишутся в журнал."
+        )
     elif not prefs.telegram_enabled:
         state_note = "Уведомления в Telegram выключены: алерты видны только на экране."
     elif link["state"] != "linked":
@@ -172,43 +174,6 @@ async def notify_settings(
             ),
         },
     )
-
-
-# --- токен бота ---
-
-
-@router.put("/notify/bot", response_model=BotOut)
-async def put_bot(
-    body: BotIn,
-    user: auth.CurrentUser = Depends(auth.current_user),
-    _: None = Depends(auth.check_csrf),
-    s: AsyncSession = Depends(db.session),
-) -> BotOut:
-    """Вставить токен бота. Наружу он не возвращается никогда."""
-    state = await service.save_token(s, user.user_id, body.token)
-    await bus.publish(
-        s,
-        ev.NOTIFY_BOT_CHANGED,
-        {"user_id": str(user.user_id), "reason": "saved"},
-    )
-    await s.commit()
-    return BotOut(bot=state)
-
-
-@router.delete("/notify/bot", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_bot(
-    _user: auth.CurrentUser = Depends(auth.current_user),
-    _: None = Depends(auth.check_csrf),
-    s: AsyncSession = Depends(db.session),
-) -> Response:
-    await service.delete_token(s)
-    await bus.publish(
-        s,
-        ev.NOTIFY_BOT_CHANGED,
-        {"user_id": str(_user.user_id), "reason": "deleted"},
-    )
-    await s.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- привязка ---

@@ -16,10 +16,10 @@ import { dateTime } from './format'
 //
 // Два отступления от прототипа, оба названы вслух в README:
 //
-// 1. **Поле токена бота.** В прототипе бот `@ed_service_bot` захардкожен:
-//    он рисовался под сервисный бот, которого у нас нет. Токен вставляет
-//    Влад, поэтому поле есть, а имя бота после сохранения приходит от самого
-//    Telegram — выдуманное имя в ссылке-приглашении никуда не ведёт.
+// 1. **Имя бота.** В прототипе бот `@ed_service_bot` захардкожен. У нас он
+//    один на установку, а его токен задаётся окружением, поэтому поля ввода
+//    здесь нет вовсе: экран показывает имя, которое пришло от самого Telegram.
+//    Выдуманное имя в ссылке-приглашении никуда не ведёт.
 // 2. **Приглашение — ссылка.** Кнопка «Пригласить» осталась на месте, но
 //    по нажатию сервис выдаёт ссылку, а пересылает её трейдер сам: бот
 //    Telegram не может написать первым тому, кто его не запускал.
@@ -34,7 +34,6 @@ export function useNotify() {
 export function TelegramCard({ me }: { me: Me }) {
   const qc = useQueryClient()
   const notify = useNotify()
-  const [token, setToken] = useState('')
   const [link, setLink] = useState<LinkStart | null>(null)
   const [error, setError] = useState('')
   const [handle, setHandle] = useState('')
@@ -48,25 +47,6 @@ export function TelegramCard({ me }: { me: Me }) {
     qc.invalidateQueries({ queryKey: ['rules'] })
     qc.invalidateQueries({ queryKey: ['today'] })
   }
-
-  const saveToken = useMutation({
-    mutationFn: () => api.put('/notify/bot', { token: token.trim() }),
-    onSuccess: () => {
-      setToken('')
-      setError('')
-      refresh()
-    },
-    onError: (err) => setError(text(err)),
-  })
-
-  const dropToken = useMutation({
-    mutationFn: () => api.del('/notify/bot'),
-    onSuccess: () => {
-      setLink(null)
-      refresh()
-    },
-    onError: (err) => setError(text(err)),
-  })
 
   const startLink = useMutation({
     mutationFn: () => api.post<LinkStart>('/notify/telegram/link'),
@@ -189,53 +169,24 @@ export function TelegramCard({ me }: { me: Me }) {
       )}
 
       <div style={{ marginTop: 14, opacity: enabled ? 1 : 0.4 }}>
-        {/* --- бот --- */}
+        {/* --- бот ---
+            Поля токена здесь больше нет: токен задаётся переменной
+            EDS_BOT_TOKEN в окружении сервиса (решение Влада от 04.10).
+            Экран только показывает, что получилось, — и говорит прямо,
+            когда бота нет, иначе привязка выглядела бы сломанной. */}
         {bot?.installed ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 13, color: 'var(--dim)', width: 120 }}>Бот</span>
-            <span style={{ fontSize: 13 }}>@{bot.username}</span>
-            <span className="mono hint">
-              токен вставлен {bot.updated_at ? dateTime(bot.updated_at) : ''}
+            <span style={{ fontSize: 13 }}>
+              {bot.username ? `@${bot.username}` : 'имя пока не получено'}
             </span>
-            <button
-              style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 11px' }}
-              onClick={() => dropToken.mutate()}
-            >
-              Убрать токен
-            </button>
           </div>
         ) : (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label
-                htmlFor="bot-token"
-                style={{ fontSize: 13, color: 'var(--dim)', width: 120 }}
-              >
-                Токен бота
-              </label>
-              <input
-                id="bot-token"
-                className="mono"
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="Токен из @BotFather"
-                style={{ flexGrow: 1, fontSize: 13 }}
-              />
-              <button
-                className="primary"
-                disabled={token.trim().length < 10 || saveToken.isPending}
-                onClick={() => saveToken.mutate()}
-                style={{ fontSize: 13 }}
-              >
-                {saveToken.isPending ? 'Проверяем…' : 'Проверить'}
-              </button>
-            </div>
-            <div className="hint" style={{ marginTop: 10, marginLeft: 130 }}>
-              Создай бота в @BotFather и вставь его токен. Он хранится
-              зашифрованным и обратно в интерфейс не возвращается. В репозиторий
-              токен не попадает.
-            </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+            <span style={{ fontSize: 13, color: 'var(--dim)', width: 120 }}>Бот</span>
+            <span className="hint" style={{ flex: 1 }}>
+              Не подключён. Токен задаётся в настройках сервиса, не отсюда.
+            </span>
           </div>
         )}
 

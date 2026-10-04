@@ -15,7 +15,6 @@ from eds.modules.notifications.models import (
     LINKED,
     QUEUED,
     SENT,
-    BotRow,
     ContactRow,
     LinkRow,
     OutboundRow,
@@ -28,38 +27,6 @@ def _now() -> dt.datetime:
 
 
 # --- бот ---
-
-
-async def bot(s: AsyncSession) -> BotRow | None:
-    res = await s.execute(select(BotRow).where(BotRow.id == 1))
-    return res.scalar_one_or_none()
-
-
-async def save_bot(
-    s: AsyncSession,
-    *,
-    token_encrypted: bytes,
-    key_version: int,
-    username: str | None,
-    bot_id: int | None,
-    installed_by: uuid.UUID,
-) -> BotRow:
-    row = await bot(s)
-    if row is None:
-        row = BotRow(id=1)
-        s.add(row)
-    row.token_encrypted = token_encrypted
-    row.key_version = key_version
-    row.username = username
-    row.bot_id = bot_id
-    row.installed_by = installed_by
-    row.updated_at = _now()
-    await s.flush()
-    return row
-
-
-async def delete_bot(s: AsyncSession) -> None:
-    await s.execute(sql_delete(BotRow).where(BotRow.id == 1))
 
 
 # --- привязка ---

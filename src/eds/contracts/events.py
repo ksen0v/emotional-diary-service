@@ -44,10 +44,6 @@ INCIDENTS_RESOLVED_RETRO: Final = "incidents.resolved_retro"
 STREAKS_CHANGED: Final = "streaks.changed"
 
 # --- notifications ---
-# Токен бота вставили, заменили или убрали. Событием, а не проверкой по
-# расписанию: вставленный токен должен поднимать бота сразу — то же решение,
-# что с подключением источника на шаге «Живое обновление».
-NOTIFY_BOT_CHANGED: Final = "notify.bot_changed"
 # Трейдер отправил боту код: аккаунт привязан. Нужно экрану настроек — он
 # узнаёт об этом живым событием, а не опросом.
 NOTIFY_TELEGRAM_LINKED: Final = "notify.telegram_linked"
@@ -75,7 +71,6 @@ ALL: Final = (
     INCIDENTS_LOCK_BREACHED,
     INCIDENTS_RESOLVED_RETRO,
     STREAKS_CHANGED,
-    NOTIFY_BOT_CHANGED,
     NOTIFY_TELEGRAM_LINKED,
     NOTIFY_CONTACT_CONFIRMED,
     PLATFORM_TEST_PING,

@@ -69,12 +69,12 @@ async def start_login(s: AsyncSession) -> dict[str, Any]:
     Без бота ссылки нет и входа нет: отвечаем прямо, а не выдаём код,
     который некуда отнести.
     """
-    username = await notify_service.bot_username(s)
+    username = await notify_service.bot_username()
     if username is None:
         raise AppError(
             "bot_not_installed",
             "Бот не подключён, войти в админку нечем. "
-            "Вставь токен бота в настройках сервиса.",
+            "Токен бота задаётся переменной EDS_BOT_TOKEN в окружении сервиса.",
             status.HTTP_409_CONFLICT,
         )
 

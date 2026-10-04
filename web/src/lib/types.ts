@@ -747,7 +747,6 @@ export type RulePreview = {
 export type BotState = {
   installed: boolean
   username: string | null
-  updated_at: string | null
 }
 
 export type TelegramLink = {

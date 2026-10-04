@@ -93,8 +93,6 @@ WIPE = (
     " OR user_id NOT IN (SELECT id FROM identity.users)",
     "DELETE FROM notify.telegram_links WHERE user_id IN (SELECT id FROM test_users)"
     " OR user_id NOT IN (SELECT id FROM identity.users)",
-    # Токен бота — одна строка на сервис, не на пользователя: чистится целиком.
-    "DELETE FROM notify.bot",
     "DELETE FROM incidents.lock_confirmations WHERE lock_id IN ("
     " SELECT id FROM incidents.locks WHERE user_id IN (SELECT id FROM test_users))",
     "DELETE FROM incidents.lock_reviews WHERE lock_id IN ("

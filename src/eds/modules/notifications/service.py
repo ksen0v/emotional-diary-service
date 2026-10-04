@@ -43,7 +43,8 @@ from eds.modules.notifications.telegram.client import (
     BotClient,
     TelegramFailure,
 )
-from eds.platform import auth, crypto
+from eds.platform import auth
+from eds.platform.config import settings
 from eds.platform.errors import UNPROCESSABLE, AppError, not_found
 
 log = logging.getLogger("eds.notify")
@@ -76,84 +77,69 @@ def _code() -> str:
 
 
 # --- бот ---
+#
+# Токен приходит из окружения (`EDS_BOT_TOKEN`), а не из базы и не из
+# интерфейса. Решение Влада от 04.10, оно отменяет решение шага 14.
+#
+# Что это меняет по сути: токен перестал быть данными, которые сервис хранит,
+# и стал настройкой установки. Поэтому его больше нельзя сменить на ходу —
+# меняется файл окружения и пересоздаётся контейнер. Цена названа в конфиге:
+# переменные видны в `docker inspect`, а в базе токен лежал зашифрованным.
+#
+# Имя бота при этом по-прежнему нужно: оно уходит в ссылку-приглашение
+# доверенному лицу и в ссылку входа в админку. Спрашиваем его у Telegram
+# один раз за процесс и запоминаем — токен теперь не меняется на ходу,
+# значит и имя измениться не может.
+
+_username: str | None = None
 
 
-async def bot_state(s: AsyncSession) -> dict[str, Any]:
-    row = await repo.bot(s)
-    if row is None:
-        return {"installed": False, "username": None, "updated_at": None}
-    return {
-        "installed": True,
-        "username": row.username,
-        "updated_at": row.updated_at,
-    }
-
-
-async def bot_username(s: AsyncSession) -> str | None:
-    row = await repo.bot(s)
-    return row.username if row else None
-
-
-async def bot_token(s: AsyncSession) -> str | None:
+def bot_token() -> str | None:
     """Токен для клиента. Наружу не отдаётся никогда — только в процесс."""
-    row = await repo.bot(s)
-    if row is None:
-        return None
-    return crypto.decrypt(row.token_encrypted)
+    raw = settings().bot_token.strip()
+    return raw or None
 
 
-async def save_token(
-    s: AsyncSession, user_id: uuid.UUID, token: str, *, api: Any | None = None
-) -> dict[str, Any]:
-    """Сохранить токен бота, предварительно спросив у Telegram, чей он.
+def forget_username() -> None:
+    """Забыть запомненное имя бота.
 
-    Проверка обязательна, и не ради аккуратности: имя бота показывается
-    на экране и уходит в ссылку-приглашение. Выдуманное имя в ссылке —
-    это приглашение, которое никуда не ведёт.
+    Нужно тестам: в одном прогоне ботов бывает несколько, а кеш живёт
+    в процессе. В рантайме не вызывается.
     """
-    cleaned = (token or "").strip()
-    if not cleaned:
-        raise AppError("validation_failed", "Токен бота пустой.", UNPROCESSABLE)
-    if not crypto.available():
-        raise AppError(
-            "secret_key_missing",
-            "Ключ шифрования не задан, поэтому хранить токен бота нельзя. "
-            "Он лежит в переменной EDS_SECRET_KEY.",
-            409,
-        )
+    global _username
+    _username = None
 
-    client = BotClient(cleaned, api=api)
+
+async def bot_username(*, api: Any | None = None) -> str | None:
+    """Имя бота у Telegram, спрошенное один раз за процесс.
+
+    Не ответил — возвращаем пусто, а не выдуманное имя: ссылка с выдуманным
+    именем никуда не ведёт, и это хуже, чем честное «бот недоступен».
+    """
+    global _username
+    if _username is not None:
+        return _username
+    token = bot_token()
+    if token is None:
+        return None
+    client = BotClient(token, api=api)
     try:
         identity = await client.me()
     except TelegramFailure as failure:
-        if failure.kind == AUTH:
-            raise AppError(
-                "bot_token_rejected",
-                "Telegram не принял токен: проверь, что скопирован весь токен "
-                "и он не отозван в @BotFather.",
-                UNPROCESSABLE,
-            ) from failure
-        raise AppError(
-            "telegram_unavailable",
-            f"Telegram не ответил: {failure.message}",
-            503,
-        ) from failure
+        log.warning("имя бота не узнать: %s", failure.message)
+        return None
     finally:
         await client.close()
-
-    await repo.save_bot(
-        s,
-        token_encrypted=crypto.encrypt(cleaned),
-        key_version=crypto.KEY_VERSION,
-        username=identity.username,
-        bot_id=identity.id,
-        installed_by=user_id,
-    )
-    return await bot_state(s)
+    _username = identity.username
+    return _username
 
 
-async def delete_token(s: AsyncSession) -> None:
-    await repo.delete_bot(s)
+async def bot_state() -> dict[str, Any]:
+    """Состояние бота для экрана: есть ли токен и как бот зовётся."""
+    return {
+        "installed": bot_token() is not None,
+        "username": await bot_username(),
+    }
 
 
 # --- привязка аккаунта ---
@@ -161,7 +147,7 @@ async def delete_token(s: AsyncSession) -> None:
 
 async def start_link(s: AsyncSession, user_id: uuid.UUID) -> dict[str, Any]:
     """Выдать код привязки и ссылку на бота."""
-    username = await bot_username(s)
+    username = await bot_username()
     if username is None:
         raise AppError(
             "bot_not_installed",
@@ -269,7 +255,7 @@ async def invite(
 
 
 async def invite_url(s: AsyncSession, contact: ContactRow) -> str | None:
-    username = await bot_username(s)
+    username = await bot_username()
     if username is None or contact.invite_code is None:
         return None
     return f"https://t.me/{username}?start={contact.invite_code}"
@@ -544,8 +530,8 @@ async def _gate(
         return "режим наблюдения: уведомления не отправляются"
     if not prefs.telegram_enabled:
         return "уведомления в Telegram выключены в настройках"
-    if await repo.bot(s) is None:
-        return "токен бота не вставлен"
+    if bot_token() is None:
+        return "токен бота не задан в окружении"
     if channel == SELF:
         link = await repo.link_of(s, user_id)
         if link is None or link.state != LINKED or link.chat_id is None:
@@ -621,12 +607,12 @@ __all__ = [
     "apply_due_removals",
     "bot_state",
     "bot_token",
+    "forget_username",
     "bot_username",
     "buddy_state",
     "cancel_removal",
     "complete_link",
     "confirm_contact",
-    "delete_token",
     "dispatch",
     "invite",
     "invite_url",
@@ -636,7 +622,6 @@ __all__ = [
     "put_template",
     "request_removal",
     "reset_template",
-    "save_token",
     "set_contact_template",
     "signals_this_month",
     "start_link",

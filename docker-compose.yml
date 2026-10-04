@@ -25,8 +25,9 @@ services:
       EDS_ENV: ${EDS_ENV:-local}
       EDS_LOG_LEVEL: ${EDS_LOG_LEVEL:-INFO}
       EDS_SECRET_KEY: ${EDS_SECRET_KEY:-}
-      # Почта админа. Compose передаёт в контейнер только то, что перечислено
-      # здесь, — переменная из .env сама по себе до сервиса не доезжает.
+      # Compose передаёт в контейнер только то, что перечислено здесь, —
+      # переменная из .env сама по себе до сервиса не доезжает.
+      EDS_BOT_TOKEN: ${EDS_BOT_TOKEN:-}
       EDS_ADMIN_EMAIL: ${EDS_ADMIN_EMAIL:-}
     ports:
       - "8000:8000"

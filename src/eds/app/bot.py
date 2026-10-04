@@ -122,7 +122,12 @@ class BotRunner:
         await self._drop_client()
 
     def reload(self) -> None:
-        """Токен изменился — поднять бота заново, не дожидаясь обхода."""
+        """Поднять бота заново, не дожидаясь обхода.
+
+        Токен теперь приходит из окружения и на ходу не меняется, поэтому
+        сам сервис этот метод не вызывает. Оставлен для тестов и для ручной
+        переподнятия из кода.
+        """
         self._reload.set()
         if self.poller is not None:
             self.poller.stop()
@@ -171,14 +176,20 @@ class BotRunner:
             await self._wait(wait)
 
     async def _token(self) -> str | None:
-        try:
-            async with session_factory()() as s:
-                token = await notify_service.bot_token(s)
-                self.username = await notify_service.bot_username(s)
-                return token
-        except Exception as exc:  # noqa: BLE001 — база может быть ещё не поднята
-            self.last_error = str(exc)
+        """Токен из окружения и имя бота у Telegram.
+
+        База здесь больше не участвует: токен — настройка установки,
+        а не данные сервиса (решение Влада от 04.10). Имя спрашивается
+        один раз за процесс и кешируется в модуле уведомлений.
+        """
+        token = notify_service.bot_token()
+        if token is None:
             return None
+        try:
+            self.username = await notify_service.bot_username()
+        except Exception as exc:  # noqa: BLE001 — имя не критично для опроса
+            self.last_error = str(exc)
+        return token
 
     async def _drop_client(self) -> None:
         if self.client is not None:

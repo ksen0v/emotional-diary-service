@@ -12,6 +12,7 @@
 
 import base64
 import datetime as dt
+import os
 import uuid
 
 import httpx
@@ -45,6 +46,11 @@ def master_key(monkeypatch):
     monkeypatch.setenv("EDS_SECRET_KEY", MASTER)
     settings.cache_clear()
     yield
+    # Токен бота живёт в окружении процесса, а имя бота — в кеше модуля.
+    # Без уборки установленный в одном тесте бот остался бы в следующем,
+    # и проверки «бота нет» проходили бы, глядя на чужой токен.
+    os.environ.pop("EDS_BOT_TOKEN", None)
+    notify_service.forget_username()
     settings.cache_clear()
 
 
@@ -96,9 +102,11 @@ def button(chat_id: int, data: str, update_id: int = 2) -> dict:
 
 
 async def install_bot(client: httpx.AsyncClient) -> None:
-    async with db.session_factory()() as s:
-        await notify_service.save_token(s, await user_id_of(), "123:ABC", api=FakeApi())
-        await s.commit()
+    """Токен бота в окружении сервиса. Сети нет: getMe подделан."""
+    os.environ["EDS_BOT_TOKEN"] = "123:ABC"
+    settings.cache_clear()
+    notify_service.forget_username()
+    await notify_service.bot_username(api=FakeApi())
 
 
 async def link_code(client: httpx.AsyncClient) -> str:
