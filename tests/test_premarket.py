@@ -110,6 +110,30 @@ def test_state_machine_covers_the_day() -> None:
     assert service.state_of(closed, has_source=True) == service.STATE_SESSION_CLOSED
 
 
+def test_lock_shows_even_without_a_check() -> None:
+    """Блокировка перебивает «чек не пройден».
+
+    Нарушение может появиться до того, как трейдер открыл сервис: сделки
+    приходят из источника сами, тег ставится в дневнике. Если в этот момент
+    показать приглашение пройти чек, экран пообещает работу, которой нет —
+    блокировка уже стоит, инцидент записан, compliance-проверка идёт.
+    """
+    assert (
+        service.state_of(None, has_source=True, lock_active=True)
+        == service.STATE_LOCKED
+    )
+    assert (
+        service.state_of(day(), has_source=True, lock_active=True)
+        == service.STATE_LOCKED
+    )
+    # А «нет допуска» блокировка по-прежнему не перебивает: там дверь
+    # закрыта целиком, и вторая закрытая дверь поверх неё ничего не добавит.
+    assert (
+        service.state_of(day(admission="denied"), has_source=True, lock_active=True)
+        == service.STATE_CHECK_FAILED
+    )
+
+
 def test_no_source_wins_over_everything() -> None:
     """Без источника сервису нечего считать, и это главный факт экрана."""
     opened = day(admission="green", session_opened_at=dt.datetime.now(dt.UTC))

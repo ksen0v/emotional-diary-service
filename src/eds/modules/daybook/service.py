@@ -71,14 +71,20 @@ def state_of(
         return STATE_REVIEW_PENDING
     if not has_source:
         return STATE_NO_SOURCE
-    if day is None or day.admission is None:
-        return STATE_NO_CHECK
-    if day.admission == DENIED:
+    if day is not None and day.admission == DENIED:
         # Блокировка не перебивает «нет допуска»: там дверь закрыта целиком,
         # и показывать поверх неё вторую закрытую дверь незачем.
         return STATE_CHECK_FAILED
+    # Блокировка перебивает «чек не пройден», и это не то же самое, что
+    # строчкой выше. «Нет допуска» — уже закрытая дверь; «чек не пройден» —
+    # приглашение пройти чек и начать работать. Показывать приглашение,
+    # когда торговля заблокирована, значит обещать то, чего не будет:
+    # сделка уже отмечена нарушением, инцидент записан, и compliance-проверка
+    # идёт. Правило «экран не врёт» решает это в пользу блокировки.
     if lock_active:
         return STATE_LOCKED
+    if day is None or day.admission is None:
+        return STATE_NO_CHECK
     if day.session_closed_at is not None:
         return STATE_SESSION_CLOSED
     return STATE_TRADING
