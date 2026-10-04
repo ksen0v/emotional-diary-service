@@ -1,0 +1,137 @@
+# Пуш в main → прогон → выкатка на сервер.
+#
+# Порядок именно такой, и это решение Влада от 04.10: сначала тесты, потом
+# сервер. Выкатка сразу была бы быстрее, но сломанный коммит клал бы сервис
+# до следующего пуша, а сервис должен работать как раз тогда, когда в него
+# никто не смотрит.
+#
+# Прогон здесь тот же, что и руками: pytest на настоящем PostgreSQL, ruff
+# и проверка типов фронта. SQLite не подходит принципиально — у нас схема
+# на модуль, JSONB и advisory-локи.
+
+name: Прогон и выкатка
+
+on:
+  push:
+    branches: [main]
+  # Ручной запуск — чтобы выкатить то же самое, ничего не коммитя.
+  workflow_dispatch:
+
+concurrency:
+  # Две выкатки подряд не должны встретиться на сервере в середине сборки.
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Тесты, линтер, типы
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: eds
+          POSTGRES_PASSWORD: eds_local_password
+          POSTGRES_DB: eds_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eds -d eds_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://eds:eds_local_password@localhost:5432/eds_test
+      DATABASE_URL: postgresql+asyncpg://eds:eds_local_password@localhost:5432/eds_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить зависимости
+        run: pip install -e ".[dev]"
+
+      - name: Накатить миграции
+        run: alembic upgrade head
+
+      - name: Тесты
+        run: pytest -q
+
+      - name: Линтер
+        run: ruff check src tests
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Поставить фронт
+        # npm install, а не npm ci: лок фронта в репозиторий не берём.
+        working-directory: web
+        run: npm install
+
+      - name: Типы фронта
+        working-directory: web
+        run: npx tsc --noEmit
+
+  deploy:
+    name: Выкатка на сервер
+    needs: check
+    runs-on: ubuntu-latest
+    # Ручной запуск тоже выкатывает, но только из main.
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Настроен ли сервер
+        id: gate
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "Сервера ещё нет: секрет DEPLOY_HOST не задан, выкатка пропущена."
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ключ и адрес сервера
+        if: steps.gate.outputs.ready == 'yes'
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Отпечаток берётся при первом подключении. Это слабее, чем
+          # заранее записанный known_hosts, и названо вслух: подмена сервера
+          # между запусками так не обнаружится. Для одной личной машины
+          # принято сознательно.
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Обновить и перезапустить
+        if: steps.gate.outputs.ready == 'yes'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          DIR: ${{ secrets.DEPLOY_DIR }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$USER_NAME@$HOST" bash -se <<EOF
+          set -euo pipefail
+          # Путь относительный: ssh приходит в домашний каталог, а тильда
+          # внутри кавычек не раскрывается и дала бы каталог с именем "~".
+          cd "${DIR:-emotional-diary-service}"
+          git fetch origin main
+          git reset --hard origin/main
+          # Образы пересобираются на самом сервере: он на ARM, а раннер
+          # на x86, и кросс-сборка под эмуляцией была бы втрое дольше.
+          docker compose -f docker-compose.prod.yml up -d --build
+          # Мусор от прошлых сборок на диске в 200 ГБ копится незаметно,
+          # а место кончается в самый неподходящий момент.
+          docker image prune -f
+          docker compose -f docker-compose.prod.yml ps
+          EOF

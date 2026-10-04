@@ -1,0 +1,69 @@
+# Сервер. Отличия от локального compose названы здесь же, потому что
+# именно они обычно и ломаются при переезде.
+#
+# 1. Исходники не монтируются. На сервере работает то, что собрано в образ,
+#    а не то, что лежит на диске рядом. Иначе «я же запушил» и «на сервере
+#    другое» однажды разойдутся.
+# 2. Порт базы наружу не выставлен. Локально 5432 открыт для удобства,
+#    на машине с публичным адресом это приглашение.
+# 3. Фронт собран, а не поднят Vite. И перед ним Caddy с сертификатом.
+# 4. restart: unless-stopped у всего. Сервис обязан пережить перезагрузку
+#    машины сам: защита, которую надо поднимать руками, — не защита.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eds}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нужен пароль базы в .env}
+      POSTGRES_DB: ${POSTGRES_DB:-eds}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eds} -d ${POSTGRES_DB:-eds}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?нужен адрес базы в .env}
+      EDS_ENV: ${EDS_ENV:-server}
+      EDS_LOG_LEVEL: ${EDS_LOG_LEVEL:-INFO}
+      # Без мастер-ключа источники не подключить, а уже сохранённые ключи
+      # не расшифровать. Поэтому пусто здесь — это остановка, а не предупреждение.
+      EDS_SECRET_KEY: ${EDS_SECRET_KEY:?нужен мастер-ключ в .env}
+      EDS_ADMIN_EMAIL: ${EDS_ADMIN_EMAIL:-}
+    # Миграции накатываются перед стартом, как и локально: образ и схема базы
+    # должны выезжать одной операцией, иначе новый код встретит старую схему.
+    command: >
+      sh -c "alembic upgrade head && python -m eds.entrypoints.api"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    depends_on:
+      - api
+    environment:
+      EDS_DOMAIN: ${EDS_DOMAIN:?нужно имя сервиса в .env, иначе сертификат не выписать}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Сертификаты переживают пересборку: Let's Encrypt считает повторные
+      # выписки и при частых выкатках упрётся в лимит.
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
