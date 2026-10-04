@@ -90,3 +90,16 @@ async def ensure_state(s: AsyncSession, user_id: uuid.UUID) -> StateRow:
     s.add(row)
     await s.flush()
     return row
+
+
+# --- админка: чистка и счётчики ---
+#
+# Каждый модуль чистит только свои таблицы. Оркестрация знает порядок,
+# но не знает, из чего состоит чужая схема, — иначе граница между модулями
+# перестала бы быть границей (Архитектура ч.1 §1).
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID) -> int:
+    res = await s.execute(sql_delete(DayMarkRow).where(DayMarkRow.user_id == user_id))
+    await s.execute(sql_delete(StateRow).where(StateRow.user_id == user_id))
+    return int(res.rowcount or 0)

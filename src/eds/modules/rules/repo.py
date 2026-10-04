@@ -4,6 +4,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -297,3 +298,33 @@ async def fired_by_day(
         .group_by(EvaluationRow.day)
     )
     return {row[0]: row[1] for row in res}
+
+
+# --- админка: чистка и счётчики ---
+#
+# Каждый модуль чистит только свои таблицы. Оркестрация знает порядок,
+# но не знает, из чего состоит чужая схема, — иначе граница между модулями
+# перестала бы быть границей (Архитектура ч.1 §1).
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID, *, keep_rules: bool) -> int:
+    """Счётчики дня и журнал проверок. Сами правила по умолчанию остаются.
+
+    Правила — это то, что трейдер написал про себя, а не история торговли.
+    Чистка данных не должна их уносить молча, поэтому их удаление — отдельное
+    решение вызывающего.
+    """
+    res = await s.execute(
+        sql_delete(EvaluationRow).where(EvaluationRow.user_id == user_id)
+    )
+    await s.execute(sql_delete(DayCounterRow).where(DayCounterRow.user_id == user_id))
+    if not keep_rules:
+        await s.execute(sql_delete(RuleRow).where(RuleRow.user_id == user_id))
+    return int(res.rowcount or 0)
+
+
+async def count_rules(s: AsyncSession, user_id: uuid.UUID) -> int:
+    res = await s.execute(
+        select(func.count()).select_from(RuleRow).where(RuleRow.user_id == user_id)
+    )
+    return int(res.scalar_one())

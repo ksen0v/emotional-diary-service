@@ -715,3 +715,27 @@ async def active_connection_owners(s: AsyncSession) -> list[tuple[uuid.UUID, str
         )
     )
     return [(row[0], row[1]) for row in res]
+
+
+# --- админка: чистка ---
+#
+# Модуль чистит только свою схему. Подключения уходят последними: на них
+# внешними ключами висит всё сырьё источника.
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID) -> None:
+    conns = select(Connection.id).where(Connection.user_id == user_id)
+    for model in (
+        FakeFeedItem,
+        Income,
+        BalanceSnapshot,
+        AggregateState,
+        PositionRow,
+        RateLimitRow,
+        ReconcileRun,
+    ):
+        await s.execute(sql_delete(model).where(model.connection_id.in_(conns)))
+    await s.execute(sql_delete(Fill).where(Fill.user_id == user_id))
+    await s.execute(sql_delete(Tag).where(Tag.user_id == user_id))
+    await s.execute(sql_delete(Account).where(Account.user_id == user_id))
+    await s.execute(sql_delete(Connection).where(Connection.user_id == user_id))

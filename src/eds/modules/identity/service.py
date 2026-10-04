@@ -258,3 +258,31 @@ async def trader_name(s: AsyncSession, user_id: uuid.UUID) -> str:
     if row is None:  # pragma: no cover — пользователь удалён посреди запроса
         return ""
     return row.email.split("@", 1)[0]
+
+
+# --- админка ---
+
+
+async def open_session_for(
+    s: AsyncSession, user: User, user_agent: str | None, ip: str | None
+) -> tuple[Identity, str, str]:
+    """Открыть сессию уже опознанному пользователю.
+
+    Нужно входу в админку: там личность приходит из Telegram, а не из пары
+    «почта и пароль», но сессия должна быть ровно та же, с теми же куками
+    и тем же отзывом из базы. Второго механизма сессий в сервисе нет
+    и заводить его не за чем.
+    """
+    return await _open_session(s, user, user_agent, ip)
+
+
+async def ensure_admin(s: AsyncSession, email: str) -> bool:
+    """Пометить пользователя админом по адресу из окружения.
+
+    Первый админ должен откуда-то взяться, и это место — единственное.
+    Адрес лежит в `.env` рядом с мастер-ключом, то есть там же, где и прочие
+    корни доверия: в репозиторий он не попадает, а `docker inspect` его
+    не показывает, в отличие от переменной в compose-файле.
+    """
+    user = await repo.set_admin(s, normalize_email(email))
+    return user is not None

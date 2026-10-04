@@ -454,3 +454,28 @@ async def opened_after_in_day(
         .order_by(Trade.open_time, Trade.id)
     )
     return [(row[0], row[1], row[2]) for row in res]
+
+
+# --- админка: чистка и счётчики ---
+#
+# Каждый модуль чистит только свои таблицы. Оркестрация знает порядок,
+# но не знает, из чего состоит чужая схема, — иначе граница между модулями
+# перестала бы быть границей (Архитектура ч.1 §1).
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID) -> int:
+    """Удалить все сделки пользователя. Возвращает, сколько удалено."""
+    await s.execute(
+        delete(TradeTag).where(
+            TradeTag.trade_id.in_(select(Trade.id).where(Trade.user_id == user_id))
+        )
+    )
+    res = await s.execute(delete(Trade).where(Trade.user_id == user_id))
+    return int(res.rowcount or 0)
+
+
+async def count_of(s: AsyncSession, user_id: uuid.UUID) -> int:
+    res = await s.execute(
+        select(func.count()).select_from(Trade).where(Trade.user_id == user_id)
+    )
+    return int(res.scalar_one())

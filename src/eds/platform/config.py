@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     # но читается сразу, чтобы отсутствие было видно на странице состояния.
     secret_key: str = Field(default="", alias="EDS_SECRET_KEY")
 
+    # Почта первого админа. Первый админ должен откуда-то взяться, и это
+    # единственное место: при старте сервис ставит признак админа тому,
+    # у кого такой адрес. Лежит в `.env` рядом с мастер-ключом — в репозиторий
+    # не попадает и в `docker inspect` не видно.
+    admin_email: str = Field(default="", alias="EDS_ADMIN_EMAIL")
+
     # Как часто консьюмеры опрашивают outbox, секунды.
     bus_poll_interval: float = Field(default=0.5, alias="EDS_BUS_POLL_INTERVAL")
 

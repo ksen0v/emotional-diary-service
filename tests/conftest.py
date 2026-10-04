@@ -114,6 +114,11 @@ WIPE = (
     "DELETE FROM daybook.session_reviews WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM daybook.premarket_checks WHERE user_id IN (SELECT id FROM test_users)",
     "DELETE FROM daybook.trading_days WHERE user_id IN (SELECT id FROM test_users)",
+    # Одноразовые входы в админку. Чистится и осиротевшее: у кода нет
+    # пользователя до подтверждения, поэтому каскад от users его не достаёт,
+    # а код — первичный ключ, и чужая строка запретила бы такой же код снова.
+    "DELETE FROM identity.admin_logins WHERE user_id IN (SELECT id FROM test_users)"
+    " OR user_id IS NULL",
     "DELETE FROM identity.users WHERE email LIKE '%@edstest.net'",
 )
 

@@ -331,3 +331,32 @@ async def tag_counts_in_range(
         .order_by(func.count().desc(), EntryTag.tag)
     )
     return [(row[0], row[1]) for row in res]
+
+
+# --- админка: чистка и счётчики ---
+#
+# Каждый модуль чистит только свои таблицы. Оркестрация знает порядок,
+# но не знает, из чего состоит чужая схема, — иначе граница между модулями
+# перестала бы быть границей (Архитектура ч.1 §1).
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID) -> int:
+    """Дневник, чеки, разборы и дни пользователя. Записи — последними:
+    на них висят теги и комментарии."""
+    entries = select(Entry.id).where(Entry.user_id == user_id)
+    await s.execute(sql_delete(EntryTag).where(EntryTag.entry_id.in_(entries)))
+    await s.execute(sql_delete(EntryComment).where(EntryComment.entry_id.in_(entries)))
+    res = await s.execute(sql_delete(Entry).where(Entry.user_id == user_id))
+    await s.execute(sql_delete(SessionReview).where(SessionReview.user_id == user_id))
+    await s.execute(
+        sql_delete(PremarketCheck).where(PremarketCheck.user_id == user_id)
+    )
+    await s.execute(sql_delete(TradingDay).where(TradingDay.user_id == user_id))
+    return int(res.rowcount or 0)
+
+
+async def count_entries(s: AsyncSession, user_id: uuid.UUID) -> int:
+    res = await s.execute(
+        select(func.count()).select_from(Entry).where(Entry.user_id == user_id)
+    )
+    return int(res.scalar_one())

@@ -28,6 +28,7 @@ from eds.modules.notifications.api import router as notify_router
 from eds.modules.rules.api import router as rules_router
 from eds.modules.source.api import router as source_router
 from eds.modules.trades.api import router as trades_router
+from eds.modules.identity import service as identity_service
 from eds.platform import bus, db, errors, log
 from eds.platform.config import settings
 from eds.version import STEP, STEP_NAME, VERSION
@@ -71,6 +72,21 @@ async def lifespan(app: FastAPI):
     # а не по перезапуску процесса.
     app_bot.runner.start()
     app.state.bot = app_bot.runner
+
+    # Признак админа ставится по адресу из окружения. Делается при каждом
+    # старте, а не однажды: база могла быть пересоздана, а `.env` — нет.
+    if settings().admin_email:
+        async with db.session_factory()() as s:
+            marked = await identity_service.ensure_admin(s, settings().admin_email)
+            await s.commit()
+        if marked:
+            logger.info("админ: %s", settings().admin_email)
+        else:
+            logger.warning(
+                "EDS_ADMIN_EMAIL=%s — пользователя с таким адресом нет, "
+                "админка не откроется",
+                settings().admin_email,
+            )
     try:
         yield
     finally:

@@ -9,11 +9,12 @@ import contextlib
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import admin as app_admin
 from eds.app import diary, pipeline, today, ui_stream
 from eds.app import notify as app_notify
 from eds.app import streaks as app_streaks
@@ -27,7 +28,7 @@ from eds.modules.streaks import service as streaks_service
 from eds.modules.trades import api as trades_api
 from eds.modules.trades import repo as trades_repo
 from eds.modules.trades import service as trades_service
-from eds.platform import auth, db
+from eds.platform import auth, db, security
 from eds.platform.errors import AppError
 
 router = APIRouter(prefix="/api/v1", tags=["sync"])
@@ -540,3 +541,132 @@ async def _incident_of_trade(s: AsyncSession, user_id: uuid.UUID, trade) -> obje
         if str((row.details or {}).get("trade_id")) == str(trade.id):
             return row
     return None
+
+
+# --- админка ---
+#
+# Ручки живут здесь по той же причине, что и сама админка: они смотрят
+# поперёк модулей. Вход (`/admin/login*`) сессии не требует — он её и выдаёт;
+# всё остальное требует и проверяет признак админа отдельно.
+
+
+class AdminLoginOut(BaseModel):
+    code: str
+    bot_url: str
+    expires_at: dt.datetime
+
+
+class AdminClaimOut(BaseModel):
+    state: str
+    email: str | None = None
+
+
+class AdminUserOut(BaseModel):
+    id: str
+    email: str
+    created_at: dt.datetime
+    is_admin: bool
+    trades: int
+    incidents: int
+    entries: int
+    rules: int
+
+
+class AdminUsersOut(BaseModel):
+    users: list[AdminUserOut]
+
+
+class AdminPurgeIn(BaseModel):
+    parts: list[str] = Field(min_length=1)
+
+
+class AdminPurgeOut(BaseModel):
+    done: dict[str, int]
+
+
+class AdminDeleteOut(BaseModel):
+    deleted: str
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+@router.post("/admin/login", response_model=AdminLoginOut)
+async def admin_login(s: AsyncSession = Depends(db.session)) -> AdminLoginOut:
+    """Выдать код и ссылку на бота. Выдать код — не значит пустить."""
+    data = await app_admin.start_login(s)
+    await s.commit()
+    return AdminLoginOut(**data)
+
+
+@router.get("/admin/login/{code}", response_model=AdminClaimOut)
+async def admin_login_state(
+    code: str,
+    request: Request,
+    response: Response,
+    s: AsyncSession = Depends(db.session),
+) -> AdminClaimOut:
+    """Подтвердили из бота или ещё нет.
+
+    Единственный GET в этом API, который меняет состояние, — и это сознательно
+    названное исключение из правила 1.2: подтверждение приходит в Telegram,
+    а страница только спрашивает. Делать опрос POST-ом значило бы требовать
+    CSRF-токен, которого до входа ещё нет.
+    """
+    data = await app_admin.claim(
+        s, code, request.headers.get("user-agent"), _client_ip(request)
+    )
+    await s.commit()
+    tokens = data.get("tokens")
+    if tokens is not None:
+        security.set_session_cookies(
+            response, tokens[0], tokens[1], secure=security.is_https(request.url.scheme)
+        )
+    return AdminClaimOut(state=data["state"], email=data.get("email"))
+
+
+@router.get("/admin/users", response_model=AdminUsersOut)
+async def admin_users(
+    user: auth.CurrentUser = Depends(auth.current_user),
+    s: AsyncSession = Depends(db.session),
+) -> AdminUsersOut:
+    await app_admin.require_admin(s, user.user_id)
+    return AdminUsersOut(users=[AdminUserOut(**row) for row in await app_admin.users(s)])
+
+
+@router.get("/admin/users/{user_id}")
+async def admin_user(
+    user_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    s: AsyncSession = Depends(db.session),
+) -> dict:
+    await app_admin.require_admin(s, user.user_id)
+    return await app_admin.user_detail(s, user_id)
+
+
+@router.post("/admin/users/{user_id}/purge", response_model=AdminPurgeOut)
+async def admin_purge(
+    user_id: uuid.UUID,
+    body: AdminPurgeIn,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> AdminPurgeOut:
+    await app_admin.require_admin(s, user.user_id)
+    done = await app_admin.purge(s, user_id, body.parts)
+    await s.commit()
+    return AdminPurgeOut(done=done)
+
+
+@router.delete("/admin/users/{user_id}", response_model=AdminDeleteOut)
+async def admin_delete_user(
+    user_id: uuid.UUID,
+    user: auth.CurrentUser = Depends(auth.current_user),
+    _: None = Depends(auth.check_csrf),
+    s: AsyncSession = Depends(db.session),
+) -> AdminDeleteOut:
+    await app_admin.require_admin(s, user.user_id)
+    email = await app_admin.delete_user(s, user_id)
+    await s.commit()
+    return AdminDeleteOut(deleted=email)

@@ -295,3 +295,21 @@ async def recent(
         .limit(limit)
     )
     return list(res.scalars())
+
+
+# --- админка: чистка и счётчики ---
+#
+# Каждый модуль чистит только свои таблицы. Оркестрация знает порядок,
+# но не знает, из чего состоит чужая схема, — иначе граница между модулями
+# перестала бы быть границей (Архитектура ч.1 §1).
+
+
+async def wipe_user(s: AsyncSession, user_id: uuid.UUID) -> None:
+    """Привязка, контакт, тексты и очередь пользователя.
+
+    Токен бота не трогается: он один на сервис, а не данные пользователя.
+    """
+    await s.execute(sql_delete(OutboundRow).where(OutboundRow.user_id == user_id))
+    await s.execute(sql_delete(TemplateRow).where(TemplateRow.user_id == user_id))
+    await s.execute(sql_delete(ContactRow).where(ContactRow.user_id == user_id))
+    await s.execute(sql_delete(LinkRow).where(LinkRow.user_id == user_id))

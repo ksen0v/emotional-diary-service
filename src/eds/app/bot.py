@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eds.app import admin
 from eds.app import notify as app_notify
 from eds.contracts import events as ev
 from eds.modules.incidents import repo as incidents_repo
@@ -276,6 +277,14 @@ async def _on_message(s: AsyncSession, message: dict[str, Any], reply) -> None:
     if not code:
         await reply(int(chat_id), HELP)
         return
+
+    # Вход в админку. Стоит первым: код одноразовый и живёт минуты,
+    # а остальные ветки долгоживущие, и перепутать их нельзя.
+    if code.startswith(admin.PREFIX):
+        answer = await admin.confirm_from_bot(s, code, int(chat_id))
+        if answer is not None:
+            await reply(int(chat_id), answer)
+            return
 
     if code.startswith("B-"):
         contact = await notify_service.confirm_contact(s, code, int(chat_id))

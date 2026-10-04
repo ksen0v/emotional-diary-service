@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useMe } from './lib/auth'
+import { AdminPage } from './pages/AdminPage'
 import { DiaryPage } from './pages/DiaryPage'
 import { IncidentsPage } from './pages/IncidentsPage'
 import { Login } from './pages/Login'
@@ -13,6 +14,11 @@ import { Shell } from './ui/Shell'
 
 export function App() {
   const me = useMe()
+  // Админка стоит до проверки входа: у неё свой вход через бота, и сессии
+  // трейдера в этот момент может не быть вовсе.
+  if (window.location.pathname.startsWith('/admin')) {
+    return <AdminPage />
+  }
 
   if (me.isLoading) {
     return (
