@@ -41,7 +41,7 @@ from eds.modules.rules import repo as rules_repo
 from eds.modules.source import repo as source_repo
 from eds.modules.streaks import repo as streaks_repo
 from eds.modules.trades import repo as trades_repo
-from eds.platform.errors import AppError
+from eds.platform.errors import UNPROCESSABLE, AppError
 
 log = logging.getLogger("eds.admin")
 
@@ -240,7 +240,7 @@ async def purge(
         raise AppError(
             "validation_failed",
             f"Неизвестно, что чистить: {', '.join(unknown)}.",
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE,
         )
     user = await identity_repo.user_by_id(s, user_id)
     if user is None:

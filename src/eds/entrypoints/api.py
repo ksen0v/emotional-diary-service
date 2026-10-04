@@ -22,13 +22,13 @@ from eds.app.api import router as sync_router
 from eds.app.scheduler import Scheduler
 from eds.contracts import events as ev
 from eds.modules.daybook.api import router as daybook_router
+from eds.modules.identity import service as identity_service
 from eds.modules.identity.api import router as identity_router
 from eds.modules.incidents.api import router as incidents_router
 from eds.modules.notifications.api import router as notify_router
 from eds.modules.rules.api import router as rules_router
 from eds.modules.source.api import router as source_router
 from eds.modules.trades.api import router as trades_router
-from eds.modules.identity import service as identity_service
 from eds.platform import bus, db, errors, log
 from eds.platform.config import settings
 from eds.version import STEP, STEP_NAME, VERSION
